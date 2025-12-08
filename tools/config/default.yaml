@@ -1,0 +1,17 @@
+hydra:
+  run:
+    dir: .scratch/logs/${exp.name}/${exp.ver}
+
+
+
+# Default groups
+defaults:
+  - _self_
+
+
+
+# Experiment stuff
+exp:
+  name: default
+  ver: 0
+  id: ${.name}.${.ver}
