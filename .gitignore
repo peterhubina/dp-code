@@ -67,5 +67,5 @@ venv.bak/
 
 wandb
 .scratch
-
+.vscode
 
