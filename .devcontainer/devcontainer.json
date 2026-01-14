@@ -30,7 +30,7 @@
 		// Volumes
 		"-v", "/mnt/scratch/${localEnv:USER}/.datasets:/mnt/datasets",
 		"-v", "/mnt/nfs-data:/mnt/nfs-data",
-		"-v", "/mnt/scratch/${localEnv:USER}/${localWorkspaceFolderBasename}:/workspace/${localWorkspaceFolderBasename}/.scratch",
+		"-v", "/mnt/scratch/${localEnv:USER}/.datasets:/workspace/${localWorkspaceFolderBasename}/.datasets",
 		"-v", "${localEnv:HOME}/.netrc:/root/.netrc"
 	],
 
