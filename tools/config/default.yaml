@@ -7,7 +7,19 @@ hydra:
 # Default groups
 defaults:
   - _self_
+  - dataset: prostate
+  - model: timm
+  - augmentation: basic
 
+trainer:
+  _target_: project.trainer.Trainer
+
+common:
+  max_epochs: 30
+  num_workers: 8
+  batch_size: 64
+  image_size: [224, 224]
+  learning_rate: 0.001
 
 
 # Experiment stuff

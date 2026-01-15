@@ -1,0 +1,24 @@
+train:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: toyproblem.data.transforms.NumpyToTensor
+    - _target_: torchvision.transforms.Resize
+      size: ${common.image_size}
+      antialias: true
+    - _target_: torchvision.transforms.Normalize
+      mean: 0.5
+      std: 0.5
+    - _target_: toyproblem.data.transforms.GaussianNoise
+      mean: 0.0
+      std: 0.05
+
+val:
+  _target_: torchvision.transforms.Compose
+  transforms:
+    - _target_: toyproblem.data.transforms.NumpyToTensor
+    - _target_: torchvision.transforms.Resize
+      size: ${common.image_size}
+      antialias: true
+    - _target_: torchvision.transforms.Normalize
+      mean: 0.5
+      std: 0.5

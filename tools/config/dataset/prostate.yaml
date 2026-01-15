@@ -1,0 +1,9 @@
+train:
+  _target_: toyproblem.data.dataset.ImageFolderDataset
+  imagePath: .scratch/datasets/prostate_data_2/train/T2
+  labelPath: .scratch/datasets/prostate_data_2/train/ADC
+
+val:
+  _target_: toyproblem.data.dataset.ImageFolderDataset
+  imagePath: .scratch/datasets/prostate_data_2/val/T2
+  labelPath: .scratch/datasets/prostate_data_2/val/ADC
