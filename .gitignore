@@ -69,4 +69,5 @@ wandb
 .scratch
 .vscode
 .datasets
-
+/papers
+.claude

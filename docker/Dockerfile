@@ -7,6 +7,11 @@ RUN apt-get install apt-transport-https
 RUN apt-get install ca-certificates
 RUN update-ca-certificates
 
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get update --fix-missing \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install required packages
 WORKDIR /setup
 COPY requirements.txt requirements.txt
