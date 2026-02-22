@@ -37,3 +37,96 @@ Copyright 2025 Laura Quintana-Quintana, Esther Sauras-Colón, Javier Santana-Nun
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+## Commands
+
+ Step 1: Extract Features (one-time)
+
+python tools/extract_features.py --patch_root /mnt/datasets/patches --output .scratch/datasets/uni2h_insitu_vs_infiltrant.pt --assets_dir .scratch/checkpoints --batch_size 64 --num_workers 4
+
+  python tools/extract_features.py \
+      --patch_root .datasets/patches \
+      --output .scratch/datasets/uni2h_insitu_vs_infiltrant.pt \
+      --assets_dir .scratch/checkpoints \
+      --batch_size 64 \
+      --num_workers 4
+
+  This scans all slide directories under .datasets/patches/, loads UNI2-h, and extracts 1536-dim features. Output .pt contains:
+  - embeddings: [N, 1536] tensor
+  - labels: [N] tensor (0 = in situ, 1 = infiltrant)
+  - slide_ids: list of slide IDs (for patient-level splitting)
+  - label_map: class names
+
+  Expected output for slide 25 alone: ~8,635 samples (864 in situ, 7,771 infiltrant)
+
+  ---
+  Step 2: Train MLP Classifier
+
+  python tools/train_classifier.py \
+      --name insitu_vs_infiltrant \
+      --ver v1 \
+      --features_path .scratch/datasets/uni2h_insitu_vs_infiltrant.pt \
+      --batch_size 256 \
+      --max_epochs 50 \
+      --learning_rate 0.001 \
+      --hidden_dim 256 \
+      --dropout 0.3 \
+      --val_split 0.2
+
+  What this does:
+  - Loads cached features from Step 1
+  - Patient-level split: all patches from each slide stay together (prevents spatial leakage)
+  - Computes class weights: infiltrant patches are downweighted to balance training
+  - Trains for 50 epochs with Adam + weighted CrossEntropyLoss
+  - Tracks: loss_train, loss_val, bacc_train, bacc_val
+  - Saves checkpoints, CSV metrics, and PDF report
+
+  Output directory: .scratch/experiments/insitu_vs_infiltrant/v1/
+  - config.yaml: training parameters
+  - training.csv: metrics per epoch
+  - report.pdf: loss/accuracy plots
+  - checkpoints/: model weights
+
+  ---
+  Quick Test (Slide 25 only)
+
+  # Extract features from slide 25
+  python tools/extract_features.py \
+      --patch_root .datasets/patches \
+      --output .scratch/datasets/test_features.pt \
+      --batch_size 32
+
+  # Train on those features
+python tools/train_classifier.py --features_path .datasets/embeddings/uni2h_insitu_vs_infiltrant.pt --max_epochs 10 --name test_clf --ver v1
+
+  python tools/train_classifier.py \
+      --features_path .scratch/datasets/test_features.pt \
+      --max_epochs 10 \
+      --name test_clf --ver v1
+
+  This is faster for testing before scaling to all 47 slides.
+
+  ---
+  Expected Behavior
+
+  1. Feature extraction: Progress bar shows ~135 batches for slide 25 (8635 ÷ 64)
+  2. Training: Each epoch shows train/val loss decreasing, balanced accuracy increasing from ~50%
+  3. Class imbalance handling: Weighted loss ensures the model doesn't just predict all infiltrant patches
+  4. Patient-level split: Train/val split is done at slide level (e.g., slide 25 might go entirely to train, future slides split 80/20)
+
+  ---
+  Scaling to All 47 Slides
+
+  Once you have all 47 WSIs patched in .datasets/patches/{1,2,...,47}/:
+
+  # Single feature extraction run (processes all slides at once)
+  python tools/extract_features.py \
+      --patch_root .datasets/patches \
+      --output .scratch/datasets/uni2h_all47_insitu_vs_infiltrant.pt \
+      --batch_size 64
+
+  # Train on full dataset
+  python tools/train_classifier.py \
+      --features_path .scratch/datasets/uni2h_all47_insitu_vs_infiltrant.pt \
+      --max_epochs 50 \
+      --name insitu_vs_infiltrant_all47 --ver v1

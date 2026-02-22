@@ -114,7 +114,6 @@ nvidia-nvtx-cu11==11.7.91
 oauthlib==3.2.2
 omegaconf==2.3.0
 opencv-python==4.7.0.72
-opencv-python-headless==4.13.0.92
 openpyxl==3.1.5
 openslide-bin==4.0.0.10
 openslide-python==1.4.3
