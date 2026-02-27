@@ -40,6 +40,11 @@ Copyright 2025 Laura Quintana-Quintana, Esther Sauras-Colón, Javier Santana-Nun
 
 ## Commands
 
+Patching:
+
+python tools/patch_wsi.py batch --wsi_dir "/workspace/dp-code/.datasets/PKG - HistologyHSI-BC-Recurrence/01_01_Histological_Images" --geojson_dir "/workspace/dp-code/.datasets/PKG - HistologyHSI-BC-Recurrence/01_02_Tissue_Annotations" --out_dir /workspace/dp-code/.datasets/wsi_patches --patch_size 224 --level 0 --overlap 0.0 --min_tissue 0.5
+
+
  Step 1: Extract Features (one-time)
 
 python tools/extract_features.py --patch_root /mnt/datasets/patches --output .scratch/datasets/uni2h_insitu_vs_infiltrant.pt --assets_dir .scratch/checkpoints --batch_size 64 --num_workers 4
