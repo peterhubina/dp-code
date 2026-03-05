@@ -67,6 +67,18 @@ def extract_patches(wsi_path, geojson_path, out_dir, patch_size=256, level=0,
     """
     exclude_classes = set(exclude_classes or [])
     slide = openslide.OpenSlide(wsi_path)
+
+    # Get coordinate offset from MRXS metadata (tissue origin within slide canvas)
+    # MRXS files store tissue at an offset position; annotations reference the tissue
+    # but read_region uses the full canvas coordinates, so we must add the offset
+    offset_x = int(slide.properties.get(
+        'mirax.NONHIERLAYER_0_LEVEL_0_SECTION.COMPRESSED_STITCHING_ORIG_SLIDE_SCANNED_AREA_IN_PIXELS__LEFT', 0))
+    offset_y = int(slide.properties.get(
+        'mirax.NONHIERLAYER_0_LEVEL_0_SECTION.COMPRESSED_STITCHING_ORIG_SLIDE_SCANNED_AREA_IN_PIXELS__TOP', 0))
+
+    if offset_x != 0 or offset_y != 0:
+        print(f"Applying coordinate offset: ({offset_x}, {offset_y})")
+
     ds = slide.level_downsamples[level]
     ps0 = int(patch_size * ds)          # patch size in level-0 coords
     stride = int(ps0 * (1 - overlap))   # stride in level-0 coords
@@ -108,7 +120,7 @@ def extract_patches(wsi_path, geojson_path, out_dir, patch_size=256, level=0,
             if tissue_ratio < min_tissue:
                 continue
 
-            img = slide.read_region((x, y), level, (patch_size, patch_size)).convert("RGB")
+            img = slide.read_region((x + offset_x, y + offset_y), level, (patch_size, patch_size)).convert("RGB")
             if np.asarray(img).mean() > 230:   # skip near-white background
                 continue
 
