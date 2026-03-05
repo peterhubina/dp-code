@@ -47,7 +47,7 @@ python tools/patch_wsi.py batch --wsi_dir "/workspace/dp-code/.datasets/PKG - Hi
 
  Step 1: Extract Features (one-time)
 
-python tools/extract_features.py --patch_root /mnt/datasets/patches --output .scratch/datasets/uni2h_insitu_vs_infiltrant.pt --assets_dir .scratch/checkpoints --batch_size 64 --num_workers 4
+python tools/extract_features.py --patch_root /mnt/datasets/wsi_patches --output mnt/datasets/uni2h_insitu_vs_infiltrant.pt --assets_dir .scratch/checkpoints --batch_size 64 --num_workers 4
 
   python tools/extract_features.py \
       --patch_root .datasets/patches \

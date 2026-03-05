@@ -5,8 +5,8 @@ from torch.utils.data import Dataset
 
 
 LABEL_MAP = {
-    "in situ carcinoma": 0,
-    "infiltrant carcinoma": 1,
+    "in_situ_carcinoma": 0,
+    "infiltrant_carcinoma": 1,
 }
 
 
