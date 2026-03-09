@@ -246,6 +246,13 @@ def batch_extract_patches(wsi_dir, geojson_dir, out_dir, patch_size=224, level=0
             continue
 
         slide_out_dir = out_dir / slide_id
+
+        # Skip already-patched WSIs (metadata.csv is written only on successful completion)
+        if (slide_out_dir / "metadata.csv").exists():
+            print(f"\nSkipping {slide_id}: already patched ({slide_out_dir})")
+            skipped += 1
+            continue
+
         print(f"\n{'='*80}")
         print(f"Processing {slide_id} ({processed + 1}/{len(wsi_files) - skipped})")
         print(f"  WSI:      {wsi_path}")
@@ -280,8 +287,8 @@ def batch_extract_patches(wsi_dir, geojson_dir, out_dir, patch_size=224, level=0
     print(f"\n{'='*80}")
     print(f"BATCH PROCESSING COMPLETE")
     print(f"{'='*80}")
-    print(f"Successfully processed: {processed}/{len(wsi_files)} slides")
-    print(f"Skipped (no annotation): {skipped}")
+    print(f"Newly processed: {processed}/{len(wsi_files)} slides")
+    print(f"Skipped (already patched or no annotation): {skipped}")
     print(f"Errors: {len(errors)}")
     print(f"Total patches extracted: {total_patches}")
 

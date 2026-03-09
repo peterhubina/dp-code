@@ -42,12 +42,12 @@ Copyright 2025 Laura Quintana-Quintana, Esther Sauras-Colón, Javier Santana-Nun
 
 Patching:
 
-python tools/patch_wsi.py batch --wsi_dir "/workspace/dp-code/.datasets/PKG - HistologyHSI-BC-Recurrence/01_01_Histological_Images" --geojson_dir "/workspace/dp-code/.datasets/PKG - HistologyHSI-BC-Recurrence/01_02_Tissue_Annotations" --out_dir /workspace/dp-code/.datasets/wsi_patches --patch_size 224 --level 0 --overlap 0.0 --min_tissue 0.5
+python tools/patch_wsi.py batch --wsi_dir ".datasets/PKG - HistologyHSI-BC-Recurrence/01_01_Histological_Images" --geojson_dir ".datasets/PKG - HistologyHSI-BC-Recurrence/01_02_Tissue_Annotations" --out_dir .datasets/wsi_patches --patch_size 224 --level 0 --overlap 0.0 --min_tissue 0.5
 
 
  Step 1: Extract Features (one-time)
 
-python tools/extract_features.py --patch_root /mnt/datasets/wsi_patches --output mnt/datasets/uni2h_insitu_vs_infiltrant.pt --assets_dir .scratch/checkpoints --batch_size 64 --num_workers 4
+python tools/extract_features.py --patch_root /mnt/datasets/wsi_patches --output mnt/datasets/uni2h_insitu_vs_infiltrant.pt --assets_dir .scratch/checkpoints --batch_size 256 --num_workers 8
 
   python tools/extract_features.py \
       --patch_root .datasets/patches \
@@ -67,16 +67,7 @@ python tools/extract_features.py --patch_root /mnt/datasets/wsi_patches --output
   ---
   Step 2: Train MLP Classifier
 
-  python tools/train_classifier.py \
-      --name insitu_vs_infiltrant \
-      --ver v1 \
-      --features_path .scratch/datasets/uni2h_insitu_vs_infiltrant.pt \
-      --batch_size 256 \
-      --max_epochs 50 \
-      --learning_rate 0.001 \
-      --hidden_dim 256 \
-      --dropout 0.3 \
-      --val_split 0.2
+  python tools/train_classifier.py --name insitu_vs_infiltrant --ver v1 --features_path mnt/datasets/uni2h_insitu_vs_infiltrant.pt --batch_size 256 --max_epochs 50 --learning_rate 0.001 --hidden_dim 256 --dropout 0.3 --val_split 0.2
 
   What this does:
   - Loads cached features from Step 1

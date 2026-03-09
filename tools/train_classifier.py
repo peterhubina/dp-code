@@ -19,6 +19,7 @@ from project.base.logging import CSVLog, ReportCompiler, ModelCheckpointer, LogC
 from project.base.utils import Statistics
 from project.UNI.uni.downstream.eval_patch_features.metrics import get_eval_metrics, print_metrics
 
+import yaml
 
 BASE_PATH = Path(".scratch/experiments")
 
@@ -150,7 +151,6 @@ def main():
     experiment_path.mkdir(parents=True, exist_ok=True)
 
     # Save config
-    import yaml
     config = vars(args)
     (experiment_path / "config.yaml").write_text(yaml.dump(config))
     print(f" > Experiment: {args.name}/{args.ver}")

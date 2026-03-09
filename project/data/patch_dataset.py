@@ -2,6 +2,7 @@ import os
 import pandas as pd
 from PIL import Image
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
 
 LABEL_MAP = {
@@ -19,7 +20,7 @@ class PatchDataset(Dataset):
     Only samples whose label appears in *classes* are kept.
     """
 
-    def __init__(self, patch_dirs, classes=None, transform=None, label_map=None):
+    def __init__(self, patch_dirs, classes=None, transform=None, label_map=None, preload=False):
         """
         Args:
             patch_dirs: list of root directories (one per slide), each containing
@@ -27,6 +28,8 @@ class PatchDataset(Dataset):
             classes: optional list of label strings to keep (default: all in LABEL_MAP).
             transform: torchvision transform applied to PIL images.
             label_map: dict mapping label string -> int (default: LABEL_MAP).
+            preload: if True, load all images into RAM at init time to avoid per-sample
+                     disk reads during training (useful when memory is available).
         """
         self.transform = transform
         self.label_map = label_map or LABEL_MAP
@@ -47,12 +50,20 @@ class PatchDataset(Dataset):
                 slide_id = str(row["slide_id"])
                 self.samples.append((img_path, label_int, slide_id))
 
+        self._cache = None
+        if preload:
+            print(f"Preloading {len(self.samples)} images into RAM...")
+            self._cache = [
+                Image.open(path).convert("RGB")
+                for path, _, _ in tqdm(self.samples)
+            ]
+
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
         img_path, label, slide_id = self.samples[idx]
-        img = Image.open(img_path).convert("RGB")
+        img = self._cache[idx] if self._cache is not None else Image.open(img_path).convert("RGB")
         if self.transform is not None:
             img = self.transform(img)
         return img, label, slide_id
