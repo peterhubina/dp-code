@@ -57,10 +57,10 @@ google-auth==2.22.0
 google-auth-oauthlib==1.0.0
 grpcio==1.57.0
 h11==0.16.0
-hf-xet==1.2.0
+hf-xet==1.3.2
 httpcore==1.0.9
 httpx==0.28.1
-huggingface_hub==1.4.1
+huggingface_hub==1.6.0
 hydra-core==1.3.2
 idna==3.4
 ImageIO==2.37.2
@@ -114,6 +114,7 @@ nvidia-nvtx-cu11==11.7.91
 oauthlib==3.2.2
 omegaconf==2.3.0
 opencv-python==4.7.0.72
+opencv-python-headless==4.11.0.86
 openpyxl==3.1.5
 openslide-bin==4.0.0.10
 openslide-python==1.4.3
