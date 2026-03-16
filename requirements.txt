@@ -48,6 +48,7 @@ fonttools==4.61.1
 fpdf2==2.8.5
 frozenlist==1.4.0
 fsspec==2023.6.0
+future==1.0.0
 gast==0.7.0
 gdown==5.2.1
 gitdb==4.0.10
@@ -195,6 +196,7 @@ threadpoolctl==3.6.0
 tifffile==2025.5.10
 timm==1.0.24
 toolz==1.1.0
+topk @ git+https://github.com/oval-group/smooth-topk.git@12c1645f187e2fa0c05f47bf1fe48864d4bd2707
 torch==2.0.1
 torchmetrics==1.1.0
 torchvision==0.15.2

@@ -25,7 +25,7 @@ docker run \
     --device /dev/fuse \
     -v "${HOME}/.netrc":/root/.netrc \
     -v "${CWD}/..":/workspace/${PROJECT_NAME} \
-    -v "/mnt/scratch/${USER}/.datasets":/mnt/datasets \
+    -v "/mnt/scratch/${USER}/.datasets":/workspace/${PROJECT_NAME}/.datasets \
     -v "/mnt/nfs-data":/mnt/nfs-data \
     -v "/mnt/scratch/${USER}/${PROJECT_NAME}":/workspace/${PROJECT_NAME}/.scratch \
     -e CUDA_VISIBLE_DEVICES="${DEVICE}" \

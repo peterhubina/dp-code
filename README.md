@@ -126,3 +126,25 @@ python tools/train_classifier.py --features_path .datasets/embeddings/uni2h_insi
       --features_path .scratch/datasets/uni2h_all47_insitu_vs_infiltrant.pt \
       --max_epochs 50 \
       --name insitu_vs_infiltrant_all47 --ver v1
+
+
+cd project/CLAM
+  python create_splits_seq.py --task tcga_brca_recurrence --seed 1 --k 10 --val_frac 0.15 --test_frac 0.0 --label_frac 1.0
+
+  python main.py --drop_out 0.25 --early_stopping --lr 2e-4 --k 10 --exp_code tcga_brca_recurrence_clam_sb --weighted_sample --bag_loss ce --inst_loss svm --task tcga_brca_recurrence --model_type clam_sb --log_data --data_root_dir /workspace/dp-code/.datasets/embeddings --embed_dim 1536 --results_dir /workspace/dp-code/.scratch/experiments/clam
+
+   python main.py \
+    --drop_out 0.25 \
+    --early_stopping \
+    --lr 2e-4 \
+    --k 10 \
+    --exp_code tcga_brca_recurrence_clam_sb \
+    --weighted_sample \
+    --bag_loss ce \
+    --inst_loss svm \
+    --task tcga_brca_recurrence \
+    --model_type clam_sb \
+    --log_data \
+    --data_root_dir /workspace/dp-code/.datasets \
+    --embed_dim 1536 \
+    --results_dir /workspace/dp-code/.scratch/experiments/clam
