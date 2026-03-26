@@ -1,0 +1,37 @@
+hydra:
+  run:
+    dir: .scratch/logs/${exp.name}/${exp.ver}
+
+defaults:
+  - _self_
+  - dataset: tcga_brca_survival
+  - model: amil_surv
+
+training:
+  max_epochs: 20
+  learning_rate: 0.0002
+  weight_decay: 0.00001
+  optimizer: adam
+  gc: 32
+  batch_size: 1
+  num_workers: 4
+
+loss:
+  type: nll_surv
+  alpha: 0.0
+
+early_stopping:
+  enabled: true
+  patience: 10
+  warmup: 5
+
+wandb:
+  enabled: true
+  project: dp-survival
+  entity: null
+  group: null
+
+exp:
+  name: amil_surv_baseline
+  ver: v1
+  base_dir: .scratch/experiments

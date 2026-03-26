@@ -1,0 +1,8 @@
+embeddings_dir: .datasets/embeddings
+labels_csv: tools/data/tcga_brca_os_labels.csv
+splits_dir: .scratch/splits/tcga_brca_os_5foldcv
+n_bins: 4
+n_folds: 5
+seed: 42
+time_col: OS_TIME
+status_col: OS_STATUS

@@ -1,0 +1,5 @@
+_target_: project.survival.model.AMIL_Surv
+input_dim: 1536
+n_classes: 4
+dropout: 0.25
+size_arg: small
