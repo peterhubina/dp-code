@@ -98,7 +98,7 @@ parser.add_argument('--model_type', type=str, choices=['clam_sb', 'clam_mb', 'mi
 parser.add_argument('--exp_code', type=str, help='experiment code for saving results')
 parser.add_argument('--weighted_sample', action='store_true', default=False, help='enable weighted sampling')
 parser.add_argument('--model_size', type=str, choices=['small', 'big'], default='small', help='size of model, does not affect mil')
-parser.add_argument('--task', type=str, choices=['task_1_tumor_vs_normal', 'task_2_tumor_subtyping', 'tcga_brca_recurrence'])
+parser.add_argument('--task', type=str, choices=['task_1_tumor_vs_normal', 'task_2_tumor_subtyping', 'tcga_brca_recurrence', 'tcga_brca_subtyping'])
 ### CLAM specific options
 parser.add_argument('--no_inst_cluster', action='store_true', default=False,
                      help='disable instance-level clustering')
@@ -109,6 +109,9 @@ parser.add_argument('--subtyping', action='store_true', default=False,
 parser.add_argument('--bag_weight', type=float, default=0.7,
                     help='clam: weight coefficient for bag-level loss (default: 0.7)')
 parser.add_argument('--B', type=int, default=8, help='numbr of positive/negative patches to sample for clam')
+parser.add_argument('--wandb', action='store_true', default=False, help='enable wandb logging')
+parser.add_argument('--wandb_project', type=str, default='clam-subtyping', help='wandb project name')
+parser.add_argument('--wandb_entity', type=str, default=None, help='wandb entity')
 args = parser.parse_args()
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -189,6 +192,18 @@ elif args.task == 'tcga_brca_recurrence':
                             ignore = [])
     dataset.load_from_h5(True)
 
+elif args.task == 'tcga_brca_subtyping':
+    args.n_classes = 5
+    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/tcga_brca_subtyping.csv',
+                            data_dir= args.data_root_dir,
+                            shuffle = False,
+                            seed = args.seed,
+                            print_info = True,
+                            label_dict = {'LumA': 0, 'LumB': 1, 'Basal': 2, 'Her2': 3, 'Normal': 4},
+                            patient_strat = True,
+                            ignore = [])
+    dataset.load_from_h5(True)
+
 else:
     raise NotImplementedError
     
@@ -217,6 +232,15 @@ f.close()
 print("################# Settings ###################")
 for key, val in settings.items():
     print("{}:  {}".format(key, val))        
+
+if args.wandb:
+    import wandb
+    wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=args.exp_code,
+        config=settings,
+    )
 
 if __name__ == "__main__":
     results = main(args)

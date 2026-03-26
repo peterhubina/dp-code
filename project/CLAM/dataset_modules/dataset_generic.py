@@ -57,6 +57,7 @@ class Generic_WSI_Classification_Dataset(Dataset):
 		self.patient_strat = patient_strat
 		self.train_ids, self.val_ids, self.test_ids  = (None, None, None)
 		self.data_dir = None
+		self.use_h5 = False
 		if not label_col:
 			label_col = 'label'
 		self.label_col = label_col

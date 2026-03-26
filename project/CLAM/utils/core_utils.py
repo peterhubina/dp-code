@@ -11,6 +11,15 @@ from sklearn.metrics import auc as calc_auc
 
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+def _wandb_log(metrics):
+    """Log metrics to wandb if a run is active."""
+    try:
+        import wandb
+        if wandb.run is not None:
+            wandb.log(metrics)
+    except ImportError:
+        pass
+
 class Accuracy_Logger(object):
     """Accuracy logger"""
     def __init__(self, n_classes):
@@ -223,7 +232,11 @@ def train(datasets, cur, args):
         writer.add_scalar('final/test_error', test_error, 0)
         writer.add_scalar('final/test_auc', test_auc, 0)
         writer.close()
-    return results_dict, test_auc, val_auc, 1-test_error, 1-val_error 
+
+    _wandb_log({'final/val_error': val_error, 'final/val_auc': val_auc,
+                'final/test_error': test_error, 'final/test_auc': test_auc})
+
+    return results_dict, test_auc, val_auc, 1-test_error, 1-val_error
 
 
 def train_loop_clam(epoch, model, loader, optimizer, n_classes, bag_weight, writer = None, loss_fn = None):
@@ -292,6 +305,9 @@ def train_loop_clam(epoch, model, loader, optimizer, n_classes, bag_weight, writ
         writer.add_scalar('train/loss', train_loss, epoch)
         writer.add_scalar('train/error', train_error, epoch)
         writer.add_scalar('train/clustering_loss', train_inst_loss, epoch)
+
+    _wandb_log({'epoch': epoch, 'train/loss': train_loss, 'train/error': train_error,
+                'train/clustering_loss': train_inst_loss})
 
 def train_loop(epoch, model, loader, optimizer, n_classes, writer = None, loss_fn = None):   
     model.train()
@@ -475,7 +491,9 @@ def validate_clam(cur, epoch, model, loader, n_classes, early_stopping = None, w
         
         if writer and acc is not None:
             writer.add_scalar('val/class_{}_acc'.format(i), acc, epoch)
-     
+
+    _wandb_log({'epoch': epoch, 'val/loss': val_loss, 'val/auc': auc,
+                'val/error': val_error, 'val/inst_loss': val_inst_loss})
 
     if early_stopping:
         assert results_dir
