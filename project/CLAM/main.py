@@ -89,6 +89,7 @@ parser.add_argument('--split_dir', type=str, default=None,
 parser.add_argument('--log_data', action='store_true', default=False, help='log data using tensorboard')
 parser.add_argument('--testing', action='store_true', default=False, help='debugging tool')
 parser.add_argument('--early_stopping', action='store_true', default=False, help='enable early stopping')
+parser.add_argument('--patience', type=int, default=10, help='early stopping patience (default: 10)')
 parser.add_argument('--opt', type=str, choices = ['adam', 'sgd'], default='adam')
 parser.add_argument('--drop_out', type=float, default=0.25, help='dropout')
 parser.add_argument('--bag_loss', type=str, choices=['svm', 'ce'], default='ce',
@@ -193,15 +194,15 @@ elif args.task == 'tcga_brca_recurrence':
     dataset.load_from_h5(True)
 
 elif args.task == 'tcga_brca_subtyping':
-    args.n_classes = 5
+    args.n_classes = 4
     dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/tcga_brca_subtyping.csv',
                             data_dir= args.data_root_dir,
                             shuffle = False,
                             seed = args.seed,
                             print_info = True,
-                            label_dict = {'LumA': 0, 'LumB': 1, 'Basal': 2, 'Her2': 3, 'Normal': 4},
+                            label_dict = {'LumA': 0, 'LumB': 1, 'Basal': 2, 'Her2': 3},
                             patient_strat = True,
-                            ignore = [])
+                            ignore = ['Normal'])
     dataset.load_from_h5(True)
 
 else:
@@ -235,12 +236,17 @@ for key, val in settings.items():
 
 if args.wandb:
     import wandb
-    wandb.init(
-        project=args.wandb_project,
-        entity=args.wandb_entity,
-        name=args.exp_code,
-        config=settings,
-    )
+    if wandb.run is None:
+        wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name=args.exp_code,
+            config=settings,
+            dir=args.results_dir,
+        )
+    else:
+        # Sweep mode: run already initialized by agent
+        wandb.config.update(settings, allow_val_change=True)
 
 if __name__ == "__main__":
     results = main(args)

@@ -53,15 +53,15 @@ elif args.task == 'tcga_brca_recurrence':
                             ignore = [])
 
 elif args.task == 'tcga_brca_subtyping':
-    args.n_classes = 5
+    args.n_classes = 4
     dataset = Generic_WSI_Classification_Dataset(csv_path = 'dataset_csv/tcga_brca_subtyping.csv',
                             shuffle = False,
                             seed = args.seed,
                             print_info = True,
-                            label_dict = {'LumA': 0, 'LumB': 1, 'Basal': 2, 'Her2': 3, 'Normal': 4},
+                            label_dict = {'LumA': 0, 'LumB': 1, 'Basal': 2, 'Her2': 3},
                             patient_strat = True,
                             patient_voting = 'maj',
-                            ignore = [])
+                            ignore = ['Normal'])
 
 else:
     raise NotImplementedError

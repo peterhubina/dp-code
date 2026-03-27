@@ -1,6 +1,5 @@
 ,train,val,test
-LumA,403,50,50
-LumB,176,24,21
-Basal,139,17,18
+LumA,399,53,51
+LumB,175,25,21
+Basal,140,17,17
 Her2,60,8,8
-Normal,28,3,4
