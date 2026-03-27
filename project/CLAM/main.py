@@ -5,6 +5,8 @@ import pdb
 import os
 import math
 
+import wandb
+
 # internal imports
 from utils.file_utils import save_pkl, load_pkl
 from utils.utils import *
@@ -39,12 +41,31 @@ def main(args):
     all_val_auc = []
     all_test_acc = []
     all_val_acc = []
+    # Track whether we own the wandb run (vs sweep agent owning it)
+    sweep_mode = args.wandb and wandb is not None and wandb.run is not None
+
     folds = np.arange(start, end)
     for i in folds:
         seed_torch(args.seed)
-        train_dataset, val_dataset, test_dataset = dataset.return_splits(from_id=False, 
+
+        if args.wandb and wandb is not None and not sweep_mode:
+            wandb.init(
+                project=args.wandb_project,
+                entity=args.wandb_entity,
+                name='{}_fold{}'.format(args.exp_code, i),
+                tags=args.wandb_tags,
+                group=args.exp_code,
+                config={**settings, 'fold': int(i)},
+                dir=args.results_dir,
+                reinit=True,
+            )
+            wandb.define_metric('epoch')
+            wandb.define_metric('train/*', step_metric='epoch')
+            wandb.define_metric('val/*', step_metric='epoch')
+
+        train_dataset, val_dataset, test_dataset = dataset.return_splits(from_id=False,
                 csv_path='{}/splits_{}.csv'.format(args.split_dir, i))
-        
+
         datasets = (train_dataset, val_dataset, test_dataset)
         results, test_auc, val_auc, test_acc, val_acc  = train(datasets, i, args)
         all_test_auc.append(test_auc)
@@ -55,7 +76,10 @@ def main(args):
         filename = os.path.join(args.results_dir, 'split_{}_results.pkl'.format(i))
         save_pkl(filename, results)
 
-    final_df = pd.DataFrame({'folds': folds, 'test_auc': all_test_auc, 
+        if args.wandb and wandb is not None and not sweep_mode:
+            wandb.finish()
+
+    final_df = pd.DataFrame({'folds': folds, 'test_auc': all_test_auc,
         'val_auc': all_val_auc, 'test_acc': all_test_acc, 'val_acc' : all_val_acc})
 
     if len(folds) != args.k:
@@ -63,6 +87,31 @@ def main(args):
     else:
         save_name = 'summary.csv'
     final_df.to_csv(os.path.join(args.results_dir, save_name))
+
+    # Log aggregate CV summary as a separate run in the same group
+    if args.wandb and wandb is not None and not sweep_mode and len(folds) > 1:
+        wandb.init(
+            project=args.wandb_project,
+            entity=args.wandb_entity,
+            name='{}_summary'.format(args.exp_code),
+            tags=(args.wandb_tags or []) + ['summary'],
+            group=args.exp_code,
+            config=settings,
+            dir=args.results_dir,
+            reinit=True,
+        )
+        wandb.summary['mean_test_auc'] = float(np.mean(all_test_auc))
+        wandb.summary['std_test_auc'] = float(np.std(all_test_auc))
+        wandb.summary['mean_val_auc'] = float(np.mean(all_val_auc))
+        wandb.summary['std_val_auc'] = float(np.std(all_val_auc))
+        wandb.summary['mean_test_acc'] = float(np.mean(all_test_acc))
+        wandb.summary['std_test_acc'] = float(np.std(all_test_acc))
+        wandb.summary['mean_val_acc'] = float(np.mean(all_val_acc))
+        wandb.summary['std_val_acc'] = float(np.std(all_val_acc))
+        for fi, (ta, va) in enumerate(zip(all_test_auc, all_val_auc)):
+            wandb.summary['fold_{}_test_auc'.format(fi)] = ta
+            wandb.summary['fold_{}_val_auc'.format(fi)] = va
+        wandb.finish()
 
 # Generic training settings
 parser = argparse.ArgumentParser(description='Configurations for WSI Training')
@@ -113,6 +162,7 @@ parser.add_argument('--B', type=int, default=8, help='numbr of positive/negative
 parser.add_argument('--wandb', action='store_true', default=False, help='enable wandb logging')
 parser.add_argument('--wandb_project', type=str, default='clam-subtyping', help='wandb project name')
 parser.add_argument('--wandb_entity', type=str, default=None, help='wandb entity')
+parser.add_argument('--wandb_tags', type=str, nargs='+', default=None, help='wandb tags (space-separated)')
 args = parser.parse_args()
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -234,19 +284,9 @@ print("################# Settings ###################")
 for key, val in settings.items():
     print("{}:  {}".format(key, val))        
 
-if args.wandb:
-    import wandb
-    if wandb.run is None:
-        wandb.init(
-            project=args.wandb_project,
-            entity=args.wandb_entity,
-            name=args.exp_code,
-            config=settings,
-            dir=args.results_dir,
-        )
-    else:
-        # Sweep mode: run already initialized by agent
-        wandb.config.update(settings, allow_val_change=True)
+if args.wandb and wandb is not None and wandb.run is not None:
+    # Sweep mode: run already initialized by agent — update config once
+    wandb.config.update(settings, allow_val_change=True)
 
 if __name__ == "__main__":
     results = main(args)
