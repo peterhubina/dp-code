@@ -14,14 +14,14 @@ args:
 """
 class Attn_Net(nn.Module):
 
-    def __init__(self, L = 1024, D = 256, dropout = False, n_classes = 1):
+    def __init__(self, L = 1024, D = 256, dropout = 0., n_classes = 1):
         super(Attn_Net, self).__init__()
         self.module = [
             nn.Linear(L, D),
             nn.Tanh()]
 
         if dropout:
-            self.module.append(nn.Dropout(0.25))
+            self.module.append(nn.Dropout(dropout))
 
         self.module.append(nn.Linear(D, n_classes))
         
@@ -39,17 +39,17 @@ args:
     n_classes: number of classes 
 """
 class Attn_Net_Gated(nn.Module):
-    def __init__(self, L = 1024, D = 256, dropout = False, n_classes = 1):
+    def __init__(self, L = 1024, D = 256, dropout = 0., n_classes = 1):
         super(Attn_Net_Gated, self).__init__()
         self.attention_a = [
             nn.Linear(L, D),
             nn.Tanh()]
-        
+
         self.attention_b = [nn.Linear(L, D),
                             nn.Sigmoid()]
         if dropout:
-            self.attention_a.append(nn.Dropout(0.25))
-            self.attention_b.append(nn.Dropout(0.25))
+            self.attention_a.append(nn.Dropout(dropout))
+            self.attention_b.append(nn.Dropout(dropout))
 
         self.attention_a = nn.Sequential(*self.attention_a)
         self.attention_b = nn.Sequential(*self.attention_b)

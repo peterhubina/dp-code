@@ -129,7 +129,7 @@ def train(datasets, cur, args):
         if device.type == 'cuda':
             loss_fn = loss_fn.cuda()
     else:
-        loss_fn = nn.CrossEntropyLoss()
+        loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
     print('Done!')
     
     print('\nInit Model...', end=' ')
@@ -184,7 +184,7 @@ def train(datasets, cur, args):
 
     print('\nSetup EarlyStopping...', end=' ')
     if args.early_stopping:
-        early_stopping = EarlyStopping(patience = args.patience, stop_epoch=args.patience, verbose = True)
+        early_stopping = EarlyStopping(patience = args.patience, stop_epoch=5, verbose = True)
 
     else:
         early_stopping = None
