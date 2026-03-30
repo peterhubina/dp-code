@@ -163,6 +163,8 @@ parser.add_argument('--wandb', action='store_true', default=False, help='enable 
 parser.add_argument('--wandb_project', type=str, default='clam-subtyping', help='wandb project name')
 parser.add_argument('--wandb_entity', type=str, default=None, help='wandb entity')
 parser.add_argument('--wandb_tags', type=str, nargs='+', default=None, help='wandb tags (space-separated)')
+parser.add_argument('--log_heatmaps', type=int, default=0,
+                    help='log top-K correct + top-K wrong attention heatmaps to W&B per fold (0=off)')
 args = parser.parse_args()
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

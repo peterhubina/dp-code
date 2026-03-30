@@ -213,7 +213,9 @@ def train(datasets, cur, args):
     print('Val error: {:.4f}, ROC AUC: {:.4f}'.format(val_error, val_auc))
 
     if test_loader is not None:
-        results_dict, test_error, test_auc, acc_logger = summary(model, test_loader, args.n_classes)
+        results_dict, test_error, test_auc, acc_logger = summary(
+            model, test_loader, args.n_classes,
+            log_heatmaps=getattr(args, 'log_heatmaps', 0))
         print('Test error: {:.4f}, ROC AUC: {:.4f}'.format(test_error, test_auc))
 
         for i in range(args.n_classes):
@@ -506,7 +508,67 @@ def validate_clam(cur, epoch, model, loader, n_classes, early_stopping = None, w
 
     return False
 
-def summary(model, loader, n_classes):
+def _log_attention_heatmaps(collected, dataset, k):
+    """Generate spatial attention scatter plots and log to W&B as a table."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import h5py
+
+    try:
+        import wandb
+        if wandb.run is None:
+            return
+    except ImportError:
+        return
+
+    correct = [s for s in collected if s['pred'] == s['label']]
+    wrong = [s for s in collected if s['pred'] != s['label']]
+    correct.sort(key=lambda s: s['confidence'], reverse=True)
+    wrong.sort(key=lambda s: s['confidence'], reverse=True)
+    selected = correct[:k] + wrong[:k]
+
+    if not selected:
+        return
+
+    data_dir = dataset.data_dir
+    if isinstance(data_dir, dict):
+        data_dir = list(data_dir.values())[0]
+
+    table = wandb.Table(columns=['slide_id', 'pred', 'true', 'correct', 'confidence', 'heatmap'])
+
+    for s in selected:
+        h5_path = os.path.join(data_dir, 'h5_files', '{}.h5'.format(s['slide_id']))
+        if not os.path.isfile(h5_path):
+            continue
+
+        with h5py.File(h5_path, 'r') as f:
+            if 'coords_patching' in f:
+                coords = f['coords_patching'][:]
+            else:
+                coords = f['coords'][:].squeeze(0)
+
+        attn = s['attention']
+        fig, ax = plt.subplots(figsize=(6, 6))
+        sc = ax.scatter(coords[:, 0], -coords[:, 1], c=attn, cmap='coolwarm',
+                        s=1, edgecolors='none')
+        fig.colorbar(sc, ax=ax, label='Attention', shrink=0.8)
+        is_correct = s['pred'] == s['label']
+        ax.set_title('{}\npred={} true={} p={:.3f}'.format(
+            s['slide_id'], s['pred'], s['label'], s['confidence']))
+        ax.set_aspect('equal')
+        ax.axis('off')
+        fig.tight_layout()
+
+        table.add_data(s['slide_id'], s['pred'], s['label'],
+                       is_correct, round(s['confidence'], 4),
+                       wandb.Image(fig))
+        plt.close(fig)
+
+    wandb.log({'attention_heatmaps': table})
+
+
+def summary(model, loader, n_classes, log_heatmaps=0):
     acc_logger = Accuracy_Logger(n_classes=n_classes)
     model.eval()
     test_loss = 0.
@@ -517,21 +579,37 @@ def summary(model, loader, n_classes):
 
     slide_ids = loader.dataset.slide_data['slide_id']
     patient_results = {}
+    attn_collected = []
 
     for batch_idx, (data, label) in enumerate(loader):
         data, label = data.to(device), label.to(device)
         slide_id = slide_ids.iloc[batch_idx]
         with torch.inference_mode():
-            logits, Y_prob, Y_hat, _, _ = model(data)
+            logits, Y_prob, Y_hat, A_raw, _ = model(data)
 
         acc_logger.log(Y_hat, label)
         probs = Y_prob.cpu().numpy()
         all_probs[batch_idx] = probs
         all_labels[batch_idx] = label.item()
-        
+
         patient_results.update({slide_id: {'slide_id': np.array(slide_id), 'prob': probs, 'label': label.item()}})
         error = calculate_error(Y_hat, label)
         test_error += error
+
+        if log_heatmaps > 0:
+            pred_cls = Y_hat.item()
+            if A_raw.dim() == 2 and A_raw.size(0) > 1:
+                attn = A_raw[pred_cls]
+            else:
+                attn = A_raw.squeeze(0)
+            attn = torch.nn.functional.softmax(attn, dim=0).cpu().numpy()
+            attn_collected.append({
+                'slide_id': slide_id,
+                'pred': pred_cls,
+                'label': label.item(),
+                'confidence': float(probs.flatten()[pred_cls]),
+                'attention': attn,
+            })
 
     test_error /= len(loader)
 
@@ -550,5 +628,7 @@ def summary(model, loader, n_classes):
 
         auc = np.nanmean(np.array(aucs))
 
+    if log_heatmaps > 0 and attn_collected:
+        _log_attention_heatmaps(attn_collected, loader.dataset, log_heatmaps)
 
     return patient_results, test_error, auc, acc_logger

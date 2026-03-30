@@ -24,7 +24,7 @@ python main.py \
     --weighted_sample \
     --log_data \
     --wandb \
-    --wandb_project clam-brca-subtyping \
+    --wandb_project clam-brca-subtyping-cv \
     --wandb_tags    full-cv best-config \
     --model_type    clam_mb \
     --model_size    big \
