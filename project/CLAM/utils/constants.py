@@ -22,5 +22,10 @@ MODEL2CONSTANTS = {
     {
 		"mean": IMAGENET_MEAN,
 		"std": IMAGENET_STD
+	},
+	"uni2-h":
+	{
+		"mean": IMAGENET_MEAN,
+		"std": IMAGENET_STD
 	}
 }
