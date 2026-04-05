@@ -186,7 +186,12 @@ def seg_and_patch(source, save_dir, patch_save_dir, mask_save_dir, stitch_save_d
 
 		seg_time_elapsed = -1
 		if seg:
-			WSI_object, seg_time_elapsed = segment(WSI_object, current_seg_params, current_filter_params) 
+			WSI_object, seg_time_elapsed = segment(WSI_object, current_seg_params, current_filter_params)
+		else:
+			# No segmentation: create a full-image contour so patching tiles everything
+			w, h = WSI_object.level_dim[0]
+			WSI_object.contours_tissue = [np.array([[0,0],[w-1,0],[w-1,h-1],[0,h-1]]).reshape(-1,1,2).astype(np.int32)]
+			WSI_object.holes_tissue = [[]]
 
 		if save_mask:
 			mask = WSI_object.visWSI(**current_vis_params)
