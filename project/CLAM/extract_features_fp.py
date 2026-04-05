@@ -3,6 +3,8 @@ import os
 import argparse
 import pdb
 from functools import partial
+from PIL import ImageFile
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 import torch
 import torch.nn as nn
