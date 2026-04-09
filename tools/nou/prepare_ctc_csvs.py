@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Generate CLAM-format dataset CSVs for NOU CTC binary classification tasks.
 
-Reads the NOU slide manifest and produces two CSVs:
+Reads the NOU slide manifest and produces three CSVs:
   - nou_ctc_ep.csv   : EP=0 ('no_ep') vs EP=1 ('ep')
   - nou_ctc_emt.csv  : EMT=0 ('no_emt') vs EMT=1 ('emt')
+  - nou_ctc_any.csv  : ANY=0 ('no_any') vs ANY=1 ('any')
 
 Only slides with is_valid=True are included.
 
@@ -12,9 +13,21 @@ Output location: project/CLAM/dataset_csv/
 
 import argparse
 import os
-import sys
 
 import pandas as pd
+
+
+def build_dataset_csv(df, source_col, label_map, output_path, case_id_col="case_id"):
+    dataset_df = df[["slide_id", source_col]].copy()
+    dataset_df["case_id"] = df[case_id_col].values
+    dataset_df["label"] = dataset_df[source_col].map(label_map)
+    dataset_df = dataset_df[["case_id", "slide_id", "label"]]
+    dataset_df = dataset_df.sort_values(["case_id", "slide_id"])
+    dataset_df.to_csv(output_path, index=False)
+    print(f"\nWrote {output_path}")
+    print(f"  Label distribution: {dataset_df['label'].value_counts().to_dict()}")
+    print(f"  Unique case_id values: {dataset_df['case_id'].nunique()}")
+    return dataset_df
 
 
 def main():
@@ -63,28 +76,30 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     # --- EP task ---
-    ep_df = df[["case_id", "slide_id", "EP"]].copy()
-    ep_df["label"] = ep_df["EP"].map({0: "no_ep", 1: "ep"})
-    ep_df = ep_df[["case_id", "slide_id", "label"]].sort_values(
-        ["case_id", "slide_id"]
+    build_dataset_csv(
+        df=df,
+        source_col="EP",
+        label_map={0: "no_ep", 1: "ep"},
+        output_path=os.path.join(output_dir, "nou_ctc_ep.csv"),
     )
-
-    ep_path = os.path.join(output_dir, "nou_ctc_ep.csv")
-    ep_df.to_csv(ep_path, index=False)
-    print(f"\nWrote {ep_path}")
-    print(f"  EP distribution: {ep_df['label'].value_counts().to_dict()}")
 
     # --- EMT task ---
-    emt_df = df[["case_id", "slide_id", "EMT"]].copy()
-    emt_df["label"] = emt_df["EMT"].map({0: "no_emt", 1: "emt"})
-    emt_df = emt_df[["case_id", "slide_id", "label"]].sort_values(
-        ["case_id", "slide_id"]
+    build_dataset_csv(
+        df=df,
+        source_col="EMT",
+        label_map={0: "no_emt", 1: "emt"},
+        output_path=os.path.join(output_dir, "nou_ctc_emt.csv"),
     )
 
-    emt_path = os.path.join(output_dir, "nou_ctc_emt.csv")
-    emt_df.to_csv(emt_path, index=False)
-    print(f"\nWrote {emt_path}")
-    print(f"  EMT distribution: {emt_df['label'].value_counts().to_dict()}")
+    # --- ANY task ---
+    # Treat every TIFF crop as its own grouping unit during split generation.
+    build_dataset_csv(
+        df=df,
+        source_col="ANY",
+        label_map={0: "no_any", 1: "any"},
+        output_path=os.path.join(output_dir, "nou_ctc_any.csv"),
+        case_id_col="slide_id",
+    )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,31 @@
+program: sweep_train_ctc_any.py
+project: ctc-any-classification
+method: bayes
+metric:
+  name: final/val_auc
+  goal: maximize
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.0005
+  reg:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.0001
+  drop_out:
+    values: [0.25, 0.5]
+  model_type:
+    values: [clam_sb, clam_mb]
+  model_size:
+    values: [small, big]
+  bag_weight:
+    distribution: uniform
+    min: 0.4
+    max: 0.9
+  B:
+    values: [4, 8]
+  inst_loss:
+    values: [ce, svm]
+  patience:
+    values: [5, 10, 20]

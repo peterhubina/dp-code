@@ -148,7 +148,7 @@ parser.add_argument('--model_type', type=str, choices=['clam_sb', 'clam_mb', 'mi
 parser.add_argument('--exp_code', type=str, help='experiment code for saving results')
 parser.add_argument('--weighted_sample', action='store_true', default=False, help='enable weighted sampling')
 parser.add_argument('--model_size', type=str, choices=['small', 'big'], default='small', help='size of model, does not affect mil')
-parser.add_argument('--task', type=str, choices=['task_1_tumor_vs_normal', 'task_2_tumor_subtyping', 'tcga_brca_recurrence', 'tcga_brca_subtyping', 'nou_ctc_ep', 'nou_ctc_emt'])
+parser.add_argument('--task', type=str, choices=['task_1_tumor_vs_normal', 'task_2_tumor_subtyping', 'tcga_brca_recurrence', 'tcga_brca_subtyping', 'nou_ctc_ep', 'nou_ctc_emt', 'nou_ctc_any'])
 ### CLAM specific options
 parser.add_argument('--no_inst_cluster', action='store_true', default=False,
                      help='disable instance-level clustering')
@@ -277,6 +277,18 @@ elif args.task == 'nou_ctc_emt':
                             seed = args.seed,
                             print_info = True,
                             label_dict = {'no_emt': 0, 'emt': 1},
+                            patient_strat = True,
+                            ignore = [])
+    dataset.load_from_h5(True)
+
+elif args.task == 'nou_ctc_any':
+    args.n_classes = 2
+    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/nou_ctc_any.csv',
+                            data_dir= args.data_root_dir,
+                            shuffle = False,
+                            seed = args.seed,
+                            print_info = True,
+                            label_dict = {'no_any': 0, 'any': 1},
                             patient_strat = True,
                             ignore = [])
     dataset.load_from_h5(True)
