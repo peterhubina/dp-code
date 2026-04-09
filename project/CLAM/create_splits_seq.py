@@ -12,7 +12,7 @@ parser.add_argument('--seed', type=int, default=1,
                     help='random seed (default: 1)')
 parser.add_argument('--k', type=int, default=10,
                     help='number of splits (default: 10)')
-parser.add_argument('--task', type=str, choices=['task_1_tumor_vs_normal', 'task_2_tumor_subtyping', 'tcga_brca_recurrence', 'tcga_brca_subtyping'])
+parser.add_argument('--task', type=str, choices=['task_1_tumor_vs_normal', 'task_2_tumor_subtyping', 'tcga_brca_recurrence', 'tcga_brca_subtyping', 'nou_ctc_ep', 'nou_ctc_emt'])
 parser.add_argument('--val_frac', type=float, default= 0.1,
                     help='fraction of labels for validation (default: 0.1)')
 parser.add_argument('--test_frac', type=float, default= 0.1,
@@ -62,6 +62,28 @@ elif args.task == 'tcga_brca_subtyping':
                             patient_strat = True,
                             patient_voting = 'maj',
                             ignore = ['Normal'])
+
+elif args.task == 'nou_ctc_ep':
+    args.n_classes = 2
+    dataset = Generic_WSI_Classification_Dataset(csv_path = 'dataset_csv/nou_ctc_ep.csv',
+                            shuffle = False,
+                            seed = args.seed,
+                            print_info = True,
+                            label_dict = {'no_ep': 0, 'ep': 1},
+                            patient_strat = True,
+                            patient_voting = 'max',
+                            ignore = [])
+
+elif args.task == 'nou_ctc_emt':
+    args.n_classes = 2
+    dataset = Generic_WSI_Classification_Dataset(csv_path = 'dataset_csv/nou_ctc_emt.csv',
+                            shuffle = False,
+                            seed = args.seed,
+                            print_info = True,
+                            label_dict = {'no_emt': 0, 'emt': 1},
+                            patient_strat = True,
+                            patient_voting = 'max',
+                            ignore = [])
 
 else:
     raise NotImplementedError
