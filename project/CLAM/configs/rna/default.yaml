@@ -1,0 +1,55 @@
+data:
+  rna_dir: /workspace/dp-code/.scratch/TCGA-BRCA-rna
+  data_path: null
+  class_set: 4class
+
+splits:
+  k: 10
+  k_start: -1
+  k_end: -1
+  label_frac: 1.0
+  val_frac: 0.1
+  test_frac: 0.1
+  split_dir: null
+  force_splits: false
+  no_auto_splits: false
+
+model:
+  hidden_dims: [512, 256]
+  drop_out: 0.25
+  top_n_genes: 0
+
+optim:
+  opt: adamw
+  lr: 0.001
+  reg: 0.0001
+  label_smoothing: 0.0
+
+train:
+  seed: 1
+  max_epochs: 100
+  batch_size: 64
+  weighted_loss: false
+  weighted_sample: false
+  early_stopping: true
+  patience: 15
+  grad_clip: 0.0
+  num_workers: 0
+
+wandb:
+  enabled: true
+  project: rna-subtyping
+  entity: null
+  mode: null
+  tags: [rna, tcga-brca, hydra]
+  log_artifacts: false
+
+output:
+  results_dir: ./results
+  exp_code: tcga_brca_rna
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: ${output.results_dir}/hydra/${now:%Y-%m-%d}/${now:%H-%M-%S}

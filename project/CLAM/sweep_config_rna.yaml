@@ -1,0 +1,47 @@
+program: sweep_train_rna.py
+project: rna-subtyping
+method: bayes
+metric:
+  name: final/val/auc
+  goal: maximize
+parameters:
+  model.hidden_dims:
+    values:
+      - "256"
+      - "512,256"
+      - "1024,512"
+      - "512,256,128"
+  model.drop_out:
+    values: [0.1, 0.25, 0.4, 0.5]
+  model.top_n_genes:
+    values: [500, 1000, 2000, 5000, 10000, 0]
+  optim.lr:
+    distribution: log_uniform_values
+    min: 0.0001
+    max: 0.003
+  optim.reg:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.001
+  optim.label_smoothing:
+    values: [0.0, 0.05, 0.1]
+  train.batch_size:
+    values: [32, 64, 128]
+  train.weighted_loss:
+    values: [true, false]
+  train.weighted_sample:
+    values: [false, true]
+  train.patience:
+    values: [8, 12, 16]
+  train.max_epochs:
+    value: 80
+  train.early_stopping:
+    value: true
+  data.class_set:
+    value: 4class
+  splits.k:
+    value: 10
+  splits.label_frac:
+    value: 1.0
+  wandb.log_artifacts:
+    value: false

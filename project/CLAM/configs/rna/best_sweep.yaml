@@ -1,0 +1,39 @@
+defaults:
+  - default
+  - _self_
+
+# Selected from /workspace/dp-code/.scratch/rna_sweep_results.
+# Sweep objective: maximize final/val/auc on fold 0.
+# Best sweep run: mz95rkh4
+# Fold-0 validation: AUC 0.998209, balanced accuracy 0.950893, accuracy 0.951923.
+# Fold-0 test is reported for audit only and was not used for selection.
+
+model:
+  hidden_dims: [1024, 512]
+  drop_out: 0.4
+  top_n_genes: 10000
+
+optim:
+  opt: adamw
+  lr: 0.0001974649844750422
+  reg: 0.000700547778589361
+  label_smoothing: 0.05
+
+train:
+  max_epochs: 80
+  batch_size: 64
+  weighted_loss: true
+  weighted_sample: true
+  early_stopping: true
+  patience: 16
+
+wandb:
+  enabled: true
+  tags:
+    - rna
+    - tcga-brca
+    - full-cv
+    - best-sweep-config
+
+output:
+  exp_code: tcga_brca_rna_best_sweep

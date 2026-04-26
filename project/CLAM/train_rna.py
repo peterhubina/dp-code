@@ -17,6 +17,7 @@ from sklearn.metrics import (
     balanced_accuracy_score,
     classification_report,
     confusion_matrix,
+    f1_score,
     roc_auc_score,
 )
 from torch.utils.data import DataLoader, WeightedRandomSampler
@@ -36,10 +37,12 @@ CLASS_NAMES = {
 }
 
 
-def parse_hidden_dims(value: str) -> tuple[int, ...]:
-    if value.strip() == "":
+def parse_hidden_dims(value) -> tuple[int, ...]:
+    if isinstance(value, (list, tuple)):
+        return tuple(int(dim) for dim in value)
+    if value is None or str(value).strip() == "":
         return ()
-    return tuple(int(dim.strip()) for dim in value.split(",") if dim.strip())
+    return tuple(int(dim.strip()) for dim in str(value).split(",") if dim.strip())
 
 
 def seed_everything(seed: int) -> None:
@@ -59,9 +62,9 @@ def require_wandb(args) -> None:
         raise ImportError("wandb is not installed. Install it or rerun without --wandb.")
 
 
-def init_wandb_run(args, settings: dict, fold: int | None, results_dir: Path) -> None:
+def init_wandb_run(args, settings: dict, fold: int | None, results_dir: Path) -> bool:
     if not args.wandb:
-        return
+        return False
 
     require_wandb(args)
     wandb_root = results_dir / "wandb"
@@ -81,6 +84,13 @@ def init_wandb_run(args, settings: dict, fold: int | None, results_dir: Path) ->
     if fold is None:
         tags.append("summary")
 
+    if wandb.run is not None:
+        wandb.config.update(settings if fold is None else {**settings, "fold": int(fold)}, allow_val_change=True)
+        wandb.define_metric("epoch")
+        wandb.define_metric("train/*", step_metric="epoch")
+        wandb.define_metric("val/*", step_metric="epoch")
+        return False
+
     init_kwargs = {
         "project": args.wandb_project,
         "entity": args.wandb_entity,
@@ -99,10 +109,11 @@ def init_wandb_run(args, settings: dict, fold: int | None, results_dir: Path) ->
     wandb.define_metric("epoch")
     wandb.define_metric("train/*", step_metric="epoch")
     wandb.define_metric("val/*", step_metric="epoch")
+    return True
 
 
-def finish_wandb_run() -> None:
-    if wandb is not None and wandb.run is not None:
+def finish_wandb_run(owns_run: bool) -> None:
+    if owns_run and wandb is not None and wandb.run is not None:
         wandb.finish()
 
 
@@ -112,22 +123,16 @@ def wandb_log(metrics: dict) -> None:
 
 
 def flatten_final_metrics(prefix: str, metrics: dict, class_names: list[str]) -> dict:
-    flat = {
+    return {
         f"{prefix}/loss": metrics["loss"],
         f"{prefix}/error": metrics["error"],
         f"{prefix}/acc": metrics["acc"],
         f"{prefix}/balanced_acc": metrics["balanced_acc"],
         f"{prefix}/auc": metrics["auc"],
+        f"{prefix}/macro_f1": metrics["macro_f1"],
+        f"{prefix}/weighted_f1": metrics["weighted_f1"],
         f"{prefix}/n": metrics["n"],
     }
-
-    report = metrics.get("classification_report", {})
-    for class_name in class_names:
-        class_report = report.get(class_name, {})
-        for metric_name in ("precision", "recall", "f1-score", "support"):
-            if metric_name in class_report:
-                flat[f"{prefix}/{class_name}/{metric_name}"] = class_report[metric_name]
-    return flat
 
 
 def resolve_data_path(args) -> Path:
@@ -328,6 +333,8 @@ def evaluate(model, loader, loss_fn, n_classes: int, device: torch.device, class
         "error": float(1.0 - accuracy_score(labels_np, preds_np)),
         "acc": float(accuracy_score(labels_np, preds_np)),
         "balanced_acc": float(balanced_accuracy_score(labels_np, preds_np)),
+        "macro_f1": float(f1_score(labels_np, preds_np, average="macro", zero_division=0)),
+        "weighted_f1": float(f1_score(labels_np, preds_np, average="weighted", zero_division=0)),
         "auc": compute_auc(labels_np, probs_np, n_classes),
         "n": int(len(labels_np)),
         "classification_report": classification_report(
@@ -450,6 +457,8 @@ def train_one_fold(
                 "val_loss": val_metrics["loss"],
                 "val_acc": val_metrics["acc"],
                 "val_balanced_acc": val_metrics["balanced_acc"],
+                "val_macro_f1": val_metrics["macro_f1"],
+                "val_weighted_f1": val_metrics["weighted_f1"],
                 "val_auc": val_metrics["auc"],
             }
         )
@@ -460,6 +469,8 @@ def train_one_fold(
                 "val/loss": val_metrics["loss"],
                 "val/acc": val_metrics["acc"],
                 "val/balanced_acc": val_metrics["balanced_acc"],
+                "val/macro_f1": val_metrics["macro_f1"],
+                "val/weighted_f1": val_metrics["weighted_f1"],
                 "val/auc": val_metrics["auc"],
             }
         )
@@ -543,7 +554,7 @@ def train_one_fold(
     final_log.update(flatten_final_metrics("final/test", test_metrics, class_names))
     wandb_log(final_log)
 
-    if wandb is not None and wandb.run is not None:
+    if getattr(args, "wandb_log_artifacts", False) and wandb is not None and wandb.run is not None:
         artifact = wandb.Artifact(
             f"{args.exp_code}_{args.class_set}_fold{fold}_rna_outputs",
             type="rna-fold-results",
@@ -568,11 +579,7 @@ def train_one_fold(
     return fold_results
 
 
-def main():
-    clam_dir = Path(__file__).resolve().parent
-    workspace_root = clam_dir.parents[1]
-    default_rna_dir = workspace_root / ".scratch" / "TCGA-BRCA-rna"
-
+def build_arg_parser(default_rna_dir: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="RNA-only TCGA-BRCA molecular subtype training")
     parser.add_argument("--rna_dir", type=str, default=str(default_rna_dir))
     parser.add_argument("--data_path", type=str, default=None)
@@ -609,7 +616,13 @@ def main():
     parser.add_argument("--wandb_entity", type=str, default=None)
     parser.add_argument("--wandb_tags", type=str, nargs="+", default=None)
     parser.add_argument("--wandb_mode", type=str, choices=["online", "offline", "disabled"], default=None)
-    args = parser.parse_args()
+    parser.add_argument("--wandb_log_artifacts", action="store_true", default=False)
+    return parser
+
+
+def run_experiment(args, clam_dir: Path | None = None) -> pd.DataFrame:
+    if clam_dir is None:
+        clam_dir = Path(__file__).resolve().parent
 
     seed_everything(args.seed)
     require_wandb(args)
@@ -674,7 +687,7 @@ def main():
     fold_results = []
     for fold in folds:
         seed_everything(args.seed + int(fold))
-        init_wandb_run(args, settings, int(fold), results_dir)
+        owns_wandb_run = init_wandb_run(args, settings, int(fold), results_dir)
         try:
             fold_results.append(
                 train_one_fold(
@@ -691,7 +704,7 @@ def main():
                 )
             )
         finally:
-            finish_wandb_run()
+            finish_wandb_run(owns_wandb_run)
 
     summary_rows = []
     for result in fold_results:
@@ -706,10 +719,14 @@ def main():
                 "val_auc": result["val"]["auc"],
                 "val_acc": result["val"]["acc"],
                 "val_balanced_acc": result["val"]["balanced_acc"],
+                "val_macro_f1": result["val"]["macro_f1"],
+                "val_weighted_f1": result["val"]["weighted_f1"],
                 "val_loss": result["val"]["loss"],
                 "test_auc": result["test"]["auc"],
                 "test_acc": result["test"]["acc"],
                 "test_balanced_acc": result["test"]["balanced_acc"],
+                "test_macro_f1": result["test"]["macro_f1"],
+                "test_weighted_f1": result["test"]["weighted_f1"],
                 "test_loss": result["test"]["loss"],
             }
         )
@@ -722,33 +739,54 @@ def main():
     summary.to_csv(results_dir / summary_name, index=False)
 
     if args.wandb and len(fold_results) > 1:
-        init_wandb_run(args, settings, None, results_dir)
+        owns_wandb_run = init_wandb_run(args, settings, None, results_dir)
         try:
             summary_metrics = {
                 "mean_val_auc": float(summary["val_auc"].mean()),
                 "std_val_auc": float(summary["val_auc"].std(ddof=0)),
                 "mean_val_acc": float(summary["val_acc"].mean()),
                 "std_val_acc": float(summary["val_acc"].std(ddof=0)),
+                "mean_val_balanced_acc": float(summary["val_balanced_acc"].mean()),
+                "std_val_balanced_acc": float(summary["val_balanced_acc"].std(ddof=0)),
+                "mean_val_macro_f1": float(summary["val_macro_f1"].mean()),
+                "std_val_macro_f1": float(summary["val_macro_f1"].std(ddof=0)),
+                "mean_val_weighted_f1": float(summary["val_weighted_f1"].mean()),
+                "std_val_weighted_f1": float(summary["val_weighted_f1"].std(ddof=0)),
                 "mean_test_auc": float(summary["test_auc"].mean()),
                 "std_test_auc": float(summary["test_auc"].std(ddof=0)),
                 "mean_test_acc": float(summary["test_acc"].mean()),
                 "std_test_acc": float(summary["test_acc"].std(ddof=0)),
                 "mean_test_balanced_acc": float(summary["test_balanced_acc"].mean()),
                 "std_test_balanced_acc": float(summary["test_balanced_acc"].std(ddof=0)),
+                "mean_test_macro_f1": float(summary["test_macro_f1"].mean()),
+                "std_test_macro_f1": float(summary["test_macro_f1"].std(ddof=0)),
+                "mean_test_weighted_f1": float(summary["test_weighted_f1"].mean()),
+                "std_test_weighted_f1": float(summary["test_weighted_f1"].std(ddof=0)),
             }
             wandb_log(summary_metrics)
-            artifact = wandb.Artifact(
-                f"{args.exp_code}_{args.class_set}_rna_summary",
-                type="rna-summary",
-            )
-            artifact.add_file(str(results_dir / summary_name))
-            artifact.add_file(str(results_dir / f"experiment_{args.exp_code}.json"))
-            wandb.log_artifact(artifact)
+            if getattr(args, "wandb_log_artifacts", False):
+                artifact = wandb.Artifact(
+                    f"{args.exp_code}_{args.class_set}_rna_summary",
+                    type="rna-summary",
+                )
+                artifact.add_file(str(results_dir / summary_name))
+                artifact.add_file(str(results_dir / f"experiment_{args.exp_code}.json"))
+                wandb.log_artifact(artifact)
         finally:
-            finish_wandb_run()
+            finish_wandb_run(owns_wandb_run)
 
     print(summary.to_string(index=False))
     print(f"Saved RNA results to: {results_dir}")
+    return summary
+
+
+def main():
+    clam_dir = Path(__file__).resolve().parent
+    workspace_root = clam_dir.parents[1]
+    default_rna_dir = workspace_root / ".scratch" / "TCGA-BRCA-rna"
+    parser = build_arg_parser(default_rna_dir)
+    args = parser.parse_args()
+    run_experiment(args, clam_dir=clam_dir)
 
 
 if __name__ == "__main__":

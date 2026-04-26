@@ -1,0 +1,25 @@
+defaults:
+  - default
+  - _self_
+
+splits:
+  k: 1
+  k_start: 0
+  k_end: 1
+  split_dir: /tmp/clam_rna_hydra_smoke_splits
+  force_splits: true
+
+model:
+  hidden_dims: [32]
+  top_n_genes: 64
+
+train:
+  max_epochs: 1
+  batch_size: 128
+
+wandb:
+  enabled: false
+
+output:
+  results_dir: /tmp/clam_rna_hydra_smoke_results
+  exp_code: hydra_smoke
