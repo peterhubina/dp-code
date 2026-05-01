@@ -346,6 +346,10 @@ class Generic_MIL_Dataset(Generic_WSI_Classification_Dataset):
 
 		else:
 			full_path = os.path.join(data_dir,'h5_files','{}.h5'.format(slide_id))
+			if not os.path.isfile(full_path):
+				direct_h5_path = os.path.join(data_dir, '{}.h5'.format(slide_id))
+				if os.path.isfile(direct_h5_path):
+					full_path = direct_h5_path
 			with h5py.File(full_path,'r') as hdf5_file:
 				features = hdf5_file['features'][:]
 
@@ -366,5 +370,4 @@ class Generic_Split(Generic_MIL_Dataset):
 	def __len__(self):
 		return len(self.slide_data)
 		
-
 

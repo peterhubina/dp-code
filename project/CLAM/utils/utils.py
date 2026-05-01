@@ -33,8 +33,14 @@ class SubsetSequentialSampler(Sampler):
 		return len(self.indices)
 
 def collate_MIL(batch):
-	img = torch.cat([item[0] for item in batch], dim = 0)
+	first_item = batch[0][0]
 	label = torch.LongTensor([item[1] for item in batch])
+	if isinstance(first_item, (tuple, list)):
+		img = torch.cat([item[0][0] for item in batch], dim = 0)
+		tabular = torch.stack([item[0][1] for item in batch], dim = 0)
+		return [(img, tabular), label]
+
+	img = torch.cat([item[0] for item in batch], dim = 0)
 	return [img, label]
 
 def collate_features(batch):
@@ -64,7 +70,8 @@ def get_split_loader(split_dataset, training = False, testing = False, weighted 
 			loader = DataLoader(split_dataset, batch_size=1, sampler = SequentialSampler(split_dataset), collate_fn = collate_MIL, **kwargs)
 	
 	else:
-		ids = np.random.choice(np.arange(len(split_dataset), int(len(split_dataset)*0.1)), replace = False)
+		n_samples = max(1, int(len(split_dataset) * 0.1))
+		ids = np.random.choice(np.arange(len(split_dataset)), n_samples, replace=False)
 		loader = DataLoader(split_dataset, batch_size=1, sampler = SubsetSequentialSampler(ids), collate_fn = collate_MIL, **kwargs )
 
 	return loader
@@ -163,4 +170,3 @@ def initialize_weights(module):
 		elif isinstance(m, nn.BatchNorm1d):
 			nn.init.constant_(m.weight, 1)
 			nn.init.constant_(m.bias, 0)
-

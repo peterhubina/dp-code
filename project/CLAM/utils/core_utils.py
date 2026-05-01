@@ -1,24 +1,164 @@
-import numpy as np
-import torch
-from utils.utils import *
+import json
 import os
+
+import numpy as np
+import pandas as pd
+import torch
 from dataset_modules.dataset_generic import save_splits
 from models.model_mil import MIL_fc, MIL_fc_mc
 from models.model_clam import CLAM_MB, CLAM_SB
+from models.model_multimodal import CLAMRNAFusion
 from sklearn.preprocessing import label_binarize
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.metrics import auc as calc_auc
+from utils.utils import *
+
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+FUSION_RESULT_KEYS = (
+    'fusion_wsi_gate_mean',
+    'fusion_rna_gate_mean',
+    'fusion_gate_std',
+)
+
+
+def _move_data_to_device(data):
+    if isinstance(data, (tuple, list)):
+        return tuple(item.to(device) if torch.is_tensor(item) else item for item in data)
+    return data.to(device)
+
+
+def _bag_size(data):
+    if isinstance(data, (tuple, list)):
+        data = data[0]
+    if data.dim() == 3 and data.size(0) == 1:
+        return data.size(1)
+    return data.size(0)
+
+
+def _is_multimodal(args):
+    return getattr(args, 'fusion_mode', None) is not None
+
+
+def _fold_path(path, fold):
+    return path.format(fold=fold)
+
+
+def _compute_auc(labels, prob, n_classes):
+    labels = np.asarray(labels)
+    if len(np.unique(labels)) < 2:
+        return float('nan')
+
+    try:
+        if n_classes == 2:
+            return roc_auc_score(labels, prob[:, 1])
+
+        aucs = []
+        binary_labels = label_binarize(labels, classes=[i for i in range(n_classes)])
+        for class_idx in range(n_classes):
+            if class_idx not in labels:
+                continue
+            class_labels = binary_labels[:, class_idx]
+            if class_labels.min() == class_labels.max():
+                continue
+            fpr, tpr, _ = roc_curve(class_labels, prob[:, class_idx])
+            aucs.append(calc_auc(fpr, tpr))
+        return float(np.mean(aucs)) if aucs else float('nan')
+    except ValueError:
+        return float('nan')
+
+
+def _fit_multimodal_transform(train_split, val_split, test_split, args):
+    if not hasattr(train_split, 'fit_tabular_transform'):
+        return None
+
+    transform = train_split.fit_tabular_transform(
+        top_n_features=getattr(args, 'tabular_top_n_features', 0)
+    )
+    for split in (val_split, test_split):
+        if split is not None and hasattr(split, 'set_tabular_transform'):
+            split.set_tabular_transform(transform)
+
+    print(
+        'Fitted tabular transform with {} selected features.'.format(
+            len(transform.selected_feature_names)
+        )
+    )
+    return transform
+
+
+def _save_multimodal_transform(split, output_path):
+    if not hasattr(split, 'tabular_transform_dict'):
+        return
+
+    payload = split.tabular_transform_dict()
+    if payload is None:
+        return
+
+    with open(output_path, 'w') as f:
+        json.dump(payload, f, indent=2)
+        f.write('\n')
+
+
 def _wandb_log(metrics):
     """Log metrics to wandb if a run is active."""
-    try:
-        import wandb
-        if wandb.run is not None:
-            wandb.log(metrics)
-    except ImportError:
-        pass
+    if wandb is not None and wandb.run is not None:
+        wandb.log(metrics)
+
+
+def _class_accuracy_metrics(prefix, acc_logger, n_classes):
+    metrics = {}
+    for class_idx in range(n_classes):
+        acc, correct, count = acc_logger.get_summary(class_idx)
+        if acc is not None:
+            metrics[f'{prefix}/class_{class_idx}_acc'] = acc
+        metrics[f'{prefix}/class_{class_idx}_correct'] = int(correct)
+        metrics[f'{prefix}/class_{class_idx}_count'] = int(count)
+    return metrics
+
+
+def _scalar_float(value):
+    if torch.is_tensor(value):
+        return float(value.detach().cpu().item())
+    return float(value)
+
+
+def _extract_fusion_metrics(results_dict):
+    if not isinstance(results_dict, dict):
+        return {}
+
+    metrics = {}
+    for key in FUSION_RESULT_KEYS:
+        if key in results_dict:
+            metrics[key] = _scalar_float(results_dict[key])
+    return metrics
+
+
+def _collect_fusion_metrics(storage, results_dict):
+    for key, value in _extract_fusion_metrics(results_dict).items():
+        storage.setdefault(key, []).append(value)
+
+
+def _summarize_fusion_metrics(prefix, storage):
+    metrics = {}
+    for key, values in storage.items():
+        if values:
+            metrics[f'{prefix}/{key}'] = float(np.mean(values))
+    return metrics
+
+
+def _summarize_patient_fusion_metrics(prefix, patient_results):
+    storage = {}
+    for result in patient_results.values():
+        for key in FUSION_RESULT_KEYS:
+            if key in result:
+                storage.setdefault(key, []).append(float(result[key]))
+    return _summarize_fusion_metrics(prefix, storage)
 
 class Accuracy_Logger(object):
     """Accuracy logger"""
@@ -121,6 +261,7 @@ def train(datasets, cur, args):
     print("Training on {} samples".format(len(train_split)))
     print("Validating on {} samples".format(len(val_split)))
     print("Testing on {} samples".format(len(test_split) if test_split is not None else 0))
+    _fit_multimodal_transform(train_split, val_split, test_split, args)
 
     print('\nInit loss function...', end=' ')
     if args.bag_loss == 'svm':
@@ -139,8 +280,34 @@ def train(datasets, cur, args):
     
     if args.model_size is not None and args.model_type != 'mil':
         model_dict.update({"size_arg": args.model_size})
-    
-    if args.model_type in ['clam_sb', 'clam_mb']:
+
+    if _is_multimodal(args):
+        if args.model_type not in ['clam_sb', 'clam_mb']:
+            raise ValueError("Multimodal fusion requires a CLAM WSI branch.")
+        if not hasattr(train_split, 'tabular_feature_dim'):
+            raise ValueError("Multimodal fusion requires a multimodal dataset split.")
+
+        model = CLAMRNAFusion(
+            wsi_model_type=args.model_type,
+            tabular_input_dim=train_split.tabular_feature_dim,
+            tabular_hidden_dim=args.tabular_hidden_dim,
+            tabular_num_layers=args.tabular_num_layers,
+            fusion_hidden_dim=args.fusion_hidden_dim,
+            fusion_mode=args.fusion_mode,
+            k_sample=args.B,
+            subtyping=args.subtyping,
+            **model_dict,
+        )
+
+        if getattr(args, 'pretrained_wsi_ckpt', None):
+            wsi_ckpt_path = _fold_path(args.pretrained_wsi_ckpt, cur)
+            model.load_wsi_checkpoint(wsi_ckpt_path)
+            print('Loaded pretrained WSI branch from {}'.format(wsi_ckpt_path))
+        if getattr(args, 'freeze_wsi_branch', False):
+            model.freeze_wsi_branch()
+            print('Frozen WSI branch parameters.')
+
+    elif args.model_type in ['clam_sb', 'clam_mb']:
         if args.subtyping:
             model_dict.update({'subtyping': True})
         
@@ -190,16 +357,21 @@ def train(datasets, cur, args):
         early_stopping = None
     print('Done!')
 
+    history = []
+    history_path = os.path.join(args.results_dir, "fold_{}_history.csv".format(cur))
     for epoch in range(args.max_epochs):
-        if args.model_type in ['clam_sb', 'clam_mb'] and not args.no_inst_cluster:     
-            train_loop_clam(epoch, model, train_loader, optimizer, args.n_classes, args.bag_weight, writer, loss_fn)
-            stop = validate_clam(cur, epoch, model, val_loader, args.n_classes, 
+        if args.model_type in ['clam_sb', 'clam_mb'] and not _is_multimodal(args) and not args.no_inst_cluster:
+            train_metrics = train_loop_clam(epoch, model, train_loader, optimizer, args.n_classes, args.bag_weight, writer, loss_fn)
+            stop, val_metrics = validate_clam(cur, epoch, model, val_loader, args.n_classes,
                 early_stopping, writer, loss_fn, args.results_dir)
         
         else:
-            train_loop(epoch, model, train_loader, optimizer, args.n_classes, writer, loss_fn)
-            stop = validate(cur, epoch, model, val_loader, args.n_classes, 
+            train_metrics = train_loop(epoch, model, train_loader, optimizer, args.n_classes, writer, loss_fn)
+            stop, val_metrics = validate(cur, epoch, model, val_loader, args.n_classes,
                 early_stopping, writer, loss_fn, args.results_dir)
+
+        history.append({'fold': cur, 'epoch': epoch, **train_metrics, **val_metrics})
+        pd.DataFrame(history).to_csv(history_path, index=False)
         
         if stop: 
             break
@@ -209,34 +381,57 @@ def train(datasets, cur, args):
     else:
         torch.save(model.state_dict(), os.path.join(args.results_dir, "s_{}_checkpoint.pt".format(cur)))
 
-    _, val_error, val_auc, _= summary(model, val_loader, args.n_classes)
+    _save_multimodal_transform(
+        train_split,
+        os.path.join(args.results_dir, "s_{}_tabular_transform.json".format(cur)),
+    )
+
+    val_results, val_error, val_auc, _= summary(model, val_loader, args.n_classes)
     print('Val error: {:.4f}, ROC AUC: {:.4f}'.format(val_error, val_auc))
+    final_metrics = {
+        'final/val_error': val_error,
+        'final/val_auc': val_auc,
+        'final/val_accuracy': 1.0 - val_error,
+    }
+    final_metrics.update(_summarize_patient_fusion_metrics('final/val', val_results))
 
     if test_loader is not None:
         results_dict, test_error, test_auc, acc_logger = summary(
             model, test_loader, args.n_classes,
             log_heatmaps=getattr(args, 'log_heatmaps', 0))
         print('Test error: {:.4f}, ROC AUC: {:.4f}'.format(test_error, test_auc))
+        final_metrics.update(
+            {
+                'final/test_error': test_error,
+                'final/test_auc': test_auc,
+                'final/test_accuracy': 1.0 - test_error,
+            }
+        )
+        final_metrics.update(_summarize_patient_fusion_metrics('final/test', results_dict))
 
         for i in range(args.n_classes):
             acc, correct, count = acc_logger.get_summary(i)
             print('class {}: acc {}, correct {}/{}'.format(i, acc, correct, count))
 
-            if writer:
+            if writer and acc is not None:
                 writer.add_scalar('final/test_class_{}_acc'.format(i), acc, 0)
     else:
         results_dict, test_error, test_auc = {}, val_error, val_auc
+        final_metrics.update(
+            {
+                'final/test_error': test_error,
+                'final/test_auc': test_auc,
+                'final/test_accuracy': 1.0 - test_error,
+            }
+        )
         print('No test split available; reporting val metrics as test metrics.')
 
     if writer:
-        writer.add_scalar('final/val_error', val_error, 0)
-        writer.add_scalar('final/val_auc', val_auc, 0)
-        writer.add_scalar('final/test_error', test_error, 0)
-        writer.add_scalar('final/test_auc', test_auc, 0)
+        for key, value in final_metrics.items():
+            writer.add_scalar(key, value, 0)
         writer.close()
 
-    _wandb_log({'final/val_error': val_error, 'final/val_auc': val_auc,
-                'final/test_error': test_error, 'final/test_auc': test_auc})
+    _wandb_log(final_metrics)
 
     return results_dict, test_auc, val_auc, 1-test_error, 1-val_error
 
@@ -253,7 +448,7 @@ def train_loop_clam(epoch, model, loader, optimizer, n_classes, bag_weight, writ
 
     print('\n')
     for batch_idx, (data, label) in enumerate(loader):
-        data, label = data.to(device), label.to(device)
+        data, label = _move_data_to_device(data), label.to(device)
         logits, Y_prob, Y_hat, _, instance_dict = model(data, label=label, instance_eval=True)
 
         acc_logger.log(Y_hat, label)
@@ -274,7 +469,7 @@ def train_loop_clam(epoch, model, loader, optimizer, n_classes, bag_weight, writ
         train_loss += loss_value
         if (batch_idx + 1) % 20 == 0:
             print('batch {}, loss: {:.4f}, instance_loss: {:.4f}, weighted_loss: {:.4f}, '.format(batch_idx, loss_value, instance_loss_value, total_loss.item()) + 
-                'label: {}, bag_size: {}'.format(label.item(), data.size(0)))
+                'label: {}, bag_size: {}'.format(label.item(), _bag_size(data)))
 
         error = calculate_error(Y_hat, label)
         train_error += error
@@ -308,20 +503,29 @@ def train_loop_clam(epoch, model, loader, optimizer, n_classes, bag_weight, writ
         writer.add_scalar('train/error', train_error, epoch)
         writer.add_scalar('train/clustering_loss', train_inst_loss, epoch)
 
-    _wandb_log({'epoch': epoch, 'train/loss': train_loss, 'train/error': train_error,
-                'train/clustering_loss': train_inst_loss})
+    metrics = {
+        'train/loss': train_loss,
+        'train/error': train_error,
+        'train/accuracy': 1.0 - train_error,
+        'train/clustering_loss': train_inst_loss,
+    }
+    metrics.update(_class_accuracy_metrics('train', acc_logger, n_classes))
+    _wandb_log({'epoch': epoch, **metrics})
+    return metrics
 
 def train_loop(epoch, model, loader, optimizer, n_classes, writer = None, loss_fn = None):   
     model.train()
     acc_logger = Accuracy_Logger(n_classes=n_classes)
     train_loss = 0.
     train_error = 0.
+    fusion_metric_values = {}
 
     print('\n')
     for batch_idx, (data, label) in enumerate(loader):
-        data, label = data.to(device), label.to(device)
+        data, label = _move_data_to_device(data), label.to(device)
 
-        logits, Y_prob, Y_hat, _, _ = model(data)
+        logits, Y_prob, Y_hat, _, results_dict = model(data)
+        _collect_fusion_metrics(fusion_metric_values, results_dict)
         
         acc_logger.log(Y_hat, label)
         loss = loss_fn(logits, label)
@@ -329,7 +533,7 @@ def train_loop(epoch, model, loader, optimizer, n_classes, writer = None, loss_f
         
         train_loss += loss_value
         if (batch_idx + 1) % 20 == 0:
-            print('batch {}, loss: {:.4f}, label: {}, bag_size: {}'.format(batch_idx, loss_value, label.item(), data.size(0)))
+            print('batch {}, loss: {:.4f}, label: {}, bag_size: {}'.format(batch_idx, loss_value, label.item(), _bag_size(data)))
            
         error = calculate_error(Y_hat, label)
         train_error += error
@@ -348,12 +552,26 @@ def train_loop(epoch, model, loader, optimizer, n_classes, writer = None, loss_f
     for i in range(n_classes):
         acc, correct, count = acc_logger.get_summary(i)
         print('class {}: acc {}, correct {}/{}'.format(i, acc, correct, count))
-        if writer:
+        if writer and acc is not None:
             writer.add_scalar('train/class_{}_acc'.format(i), acc, epoch)
 
     if writer:
         writer.add_scalar('train/loss', train_loss, epoch)
         writer.add_scalar('train/error', train_error, epoch)
+
+    metrics = {
+        'train/loss': train_loss,
+        'train/error': train_error,
+        'train/accuracy': 1.0 - train_error,
+    }
+    metrics.update(_class_accuracy_metrics('train', acc_logger, n_classes))
+    metrics.update(_summarize_fusion_metrics('train', fusion_metric_values))
+    if writer:
+        for key, value in metrics.items():
+            if key.startswith('train/fusion_'):
+                writer.add_scalar(key, value, epoch)
+    _wandb_log({'epoch': epoch, **metrics})
+    return metrics
 
    
 def validate(cur, epoch, model, loader, n_classes, early_stopping = None, writer = None, loss_fn = None, results_dir=None):
@@ -362,15 +580,17 @@ def validate(cur, epoch, model, loader, n_classes, early_stopping = None, writer
     # loader.dataset.update_mode(True)
     val_loss = 0.
     val_error = 0.
+    fusion_metric_values = {}
     
     prob = np.zeros((len(loader), n_classes))
     labels = np.zeros(len(loader))
 
     with torch.no_grad():
         for batch_idx, (data, label) in enumerate(loader):
-            data, label = data.to(device, non_blocking=True), label.to(device, non_blocking=True)
+            data, label = _move_data_to_device(data), label.to(device, non_blocking=True)
 
-            logits, Y_prob, Y_hat, _, _ = model(data)
+            logits, Y_prob, Y_hat, _, results_dict = model(data)
+            _collect_fusion_metrics(fusion_metric_values, results_dict)
 
             acc_logger.log(Y_hat, label)
             
@@ -387,11 +607,7 @@ def validate(cur, epoch, model, loader, n_classes, early_stopping = None, writer
     val_error /= len(loader)
     val_loss /= len(loader)
 
-    if n_classes == 2:
-        auc = roc_auc_score(labels, prob[:, 1])
-    
-    else:
-        auc = roc_auc_score(labels, prob, multi_class='ovr')
+    auc = _compute_auc(labels, prob, n_classes)
     
     
     if writer:
@@ -404,16 +620,31 @@ def validate(cur, epoch, model, loader, n_classes, early_stopping = None, writer
         acc, correct, count = acc_logger.get_summary(i)
         print('class {}: acc {}, correct {}/{}'.format(i, acc, correct, count))
 
+    metrics = {
+        'val/loss': val_loss,
+        'val/error': val_error,
+        'val/accuracy': 1.0 - val_error,
+        'val/auc': auc,
+    }
+    metrics.update(_class_accuracy_metrics('val', acc_logger, n_classes))
+    metrics.update(_summarize_fusion_metrics('val', fusion_metric_values))
+    if writer:
+        for key, value in metrics.items():
+            if key.startswith('val/fusion_'):
+                writer.add_scalar(key, value, epoch)
+    _wandb_log({'epoch': epoch, **metrics})
+
     if early_stopping:
         assert results_dir
         # Monitor -auc so the best checkpoint maximises AUC, not minimises loss.
-        early_stopping(epoch, -auc, model, ckpt_name = os.path.join(results_dir, "s_{}_checkpoint.pt".format(cur)))
+        monitor_value = -auc if np.isfinite(auc) else val_loss
+        early_stopping(epoch, monitor_value, model, ckpt_name = os.path.join(results_dir, "s_{}_checkpoint.pt".format(cur)))
 
         if early_stopping.early_stop:
             print("Early stopping")
-            return True
+            return True, metrics
 
-    return False
+    return False, metrics
 
 def validate_clam(cur, epoch, model, loader, n_classes, early_stopping = None, writer = None, loss_fn = None, results_dir = None):
     model.eval()
@@ -431,7 +662,7 @@ def validate_clam(cur, epoch, model, loader, n_classes, early_stopping = None, w
     sample_size = model.k_sample
     with torch.inference_mode():
         for batch_idx, (data, label) in enumerate(loader):
-            data, label = data.to(device), label.to(device)      
+            data, label = _move_data_to_device(data), label.to(device)
             logits, Y_prob, Y_hat, _, instance_dict = model(data, label=label, instance_eval=True)
             acc_logger.log(Y_hat, label)
             
@@ -458,20 +689,7 @@ def validate_clam(cur, epoch, model, loader, n_classes, early_stopping = None, w
     val_error /= len(loader)
     val_loss /= len(loader)
 
-    if n_classes == 2:
-        auc = roc_auc_score(labels, prob[:, 1])
-        aucs = []
-    else:
-        aucs = []
-        binary_labels = label_binarize(labels, classes=[i for i in range(n_classes)])
-        for class_idx in range(n_classes):
-            if class_idx in labels:
-                fpr, tpr, _ = roc_curve(binary_labels[:, class_idx], prob[:, class_idx])
-                aucs.append(calc_auc(fpr, tpr))
-            else:
-                aucs.append(float('nan'))
-
-        auc = np.nanmean(np.array(aucs))
+    auc = _compute_auc(labels, prob, n_classes)
 
     print('\nVal Set, val_loss: {:.4f}, val_error: {:.4f}, auc: {:.4f}'.format(val_loss, val_error, auc))
     if inst_count > 0:
@@ -494,19 +712,27 @@ def validate_clam(cur, epoch, model, loader, n_classes, early_stopping = None, w
         if writer and acc is not None:
             writer.add_scalar('val/class_{}_acc'.format(i), acc, epoch)
 
-    _wandb_log({'epoch': epoch, 'val/loss': val_loss, 'val/auc': auc,
-                'val/error': val_error, 'val/inst_loss': val_inst_loss})
+    metrics = {
+        'val/loss': val_loss,
+        'val/error': val_error,
+        'val/accuracy': 1.0 - val_error,
+        'val/auc': auc,
+        'val/inst_loss': val_inst_loss,
+    }
+    metrics.update(_class_accuracy_metrics('val', acc_logger, n_classes))
+    _wandb_log({'epoch': epoch, **metrics})
 
     if early_stopping:
         assert results_dir
         # Monitor -auc so the best checkpoint maximises AUC, not minimises loss.
-        early_stopping(epoch, -auc, model, ckpt_name = os.path.join(results_dir, "s_{}_checkpoint.pt".format(cur)))
+        monitor_value = -auc if np.isfinite(auc) else val_loss
+        early_stopping(epoch, monitor_value, model, ckpt_name = os.path.join(results_dir, "s_{}_checkpoint.pt".format(cur)))
 
         if early_stopping.early_stop:
             print("Early stopping")
-            return True
+            return True, metrics
 
-    return False
+    return False, metrics
 
 def _log_attention_heatmaps(collected, dataset, k):
     """Generate spatial attention scatter plots and log to W&B as a table."""
@@ -582,17 +808,23 @@ def summary(model, loader, n_classes, log_heatmaps=0):
     attn_collected = []
 
     for batch_idx, (data, label) in enumerate(loader):
-        data, label = data.to(device), label.to(device)
+        data, label = _move_data_to_device(data), label.to(device)
         slide_id = slide_ids.iloc[batch_idx]
         with torch.inference_mode():
-            logits, Y_prob, Y_hat, A_raw, _ = model(data)
+            logits, Y_prob, Y_hat, A_raw, results_dict = model(data)
 
         acc_logger.log(Y_hat, label)
         probs = Y_prob.cpu().numpy()
         all_probs[batch_idx] = probs
         all_labels[batch_idx] = label.item()
 
-        patient_results.update({slide_id: {'slide_id': np.array(slide_id), 'prob': probs, 'label': label.item()}})
+        slide_result = {
+            'slide_id': np.array(slide_id),
+            'prob': probs,
+            'label': label.item(),
+        }
+        slide_result.update(_extract_fusion_metrics(results_dict))
+        patient_results.update({slide_id: slide_result})
         error = calculate_error(Y_hat, label)
         test_error += error
 
@@ -613,20 +845,7 @@ def summary(model, loader, n_classes, log_heatmaps=0):
 
     test_error /= len(loader)
 
-    if n_classes == 2:
-        auc = roc_auc_score(all_labels, all_probs[:, 1])
-        aucs = []
-    else:
-        aucs = []
-        binary_labels = label_binarize(all_labels, classes=[i for i in range(n_classes)])
-        for class_idx in range(n_classes):
-            if class_idx in all_labels:
-                fpr, tpr, _ = roc_curve(binary_labels[:, class_idx], all_probs[:, class_idx])
-                aucs.append(calc_auc(fpr, tpr))
-            else:
-                aucs.append(float('nan'))
-
-        auc = np.nanmean(np.array(aucs))
+    auc = _compute_auc(all_labels, all_probs, n_classes)
 
     if log_heatmaps > 0 and attn_collected:
         _log_attention_heatmaps(attn_collected, loader.dataset, log_heatmaps)

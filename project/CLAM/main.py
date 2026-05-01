@@ -12,6 +12,7 @@ from utils.file_utils import save_pkl, load_pkl
 from utils.utils import *
 from utils.core_utils import train
 from dataset_modules.dataset_generic import Generic_WSI_Classification_Dataset, Generic_MIL_Dataset
+from dataset_modules.multimodal_dataset import Generic_Multimodal_MIL_Dataset
 
 # pytorch imports
 import torch
@@ -62,6 +63,7 @@ def main(args):
             wandb.define_metric('epoch')
             wandb.define_metric('train/*', step_metric='epoch')
             wandb.define_metric('val/*', step_metric='epoch')
+            wandb.define_metric('final/*')
 
         train_dataset, val_dataset, test_dataset = dataset.return_splits(from_id=False,
                 csv_path='{}/splits_{}.csv'.format(args.split_dir, i))
@@ -149,6 +151,27 @@ parser.add_argument('--exp_code', type=str, help='experiment code for saving res
 parser.add_argument('--weighted_sample', action='store_true', default=False, help='enable weighted sampling')
 parser.add_argument('--model_size', type=str, choices=['small', 'big'], default='small', help='size of model, does not affect mil')
 parser.add_argument('--task', type=str, choices=['task_1_tumor_vs_normal', 'task_2_tumor_subtyping', 'tcga_brca_recurrence', 'tcga_brca_subtyping', 'nou_ctc_ep', 'nou_ctc_emt', 'nou_ctc_any'])
+### Multimodal fusion options
+parser.add_argument('--fusion_mode', type=str, choices=['concat', 'gated'], default=None,
+                    help='enable WSI + tabular multimodal fusion; supports concat and gated')
+parser.add_argument('--tabular_csv', type=str, default=None,
+                    help='CSV containing case_id, label and RNA/tabular feature columns')
+parser.add_argument('--tabular_case_id_col', type=str, default='case_id',
+                    help='case identifier column in --tabular_csv')
+parser.add_argument('--tabular_label_col', type=str, default='label',
+                    help='label column in --tabular_csv')
+parser.add_argument('--tabular_hidden_dim', type=int, default=256,
+                    help='hidden dimension for the tabular MLP encoder')
+parser.add_argument('--tabular_num_layers', type=int, default=2,
+                    help='number of hidden layers in the tabular MLP encoder')
+parser.add_argument('--tabular_top_n_features', type=int, default=0,
+                    help='select top-N tabular features by training-fold variance; 0 keeps all features')
+parser.add_argument('--fusion_hidden_dim', type=int, default=128,
+                    help='hidden dimension for the fusion head; <=0 uses a linear concat head')
+parser.add_argument('--pretrained_wsi_ckpt', type=str, default=None,
+                    help='optional WSI-only CLAM checkpoint used to initialize the WSI branch; may include {fold}')
+parser.add_argument('--freeze_wsi_branch', action='store_true', default=False,
+                    help='freeze the WSI branch after loading --pretrained_wsi_ckpt')
 ### CLAM specific options
 parser.add_argument('--no_inst_cluster', action='store_true', default=False,
                      help='disable instance-level clustering')
@@ -167,6 +190,14 @@ parser.add_argument('--log_heatmaps', type=int, default=0,
                     help='log top-K correct + top-K wrong attention heatmaps to W&B per fold (0=off)')
 args = parser.parse_args()
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+if args.fusion_mode is not None:
+    if args.tabular_csv is None:
+        parser.error('--tabular_csv is required when --fusion_mode is set')
+    if args.model_type not in ['clam_sb', 'clam_mb']:
+        parser.error('--fusion_mode requires --model_type clam_sb or clam_mb')
+    if args.freeze_wsi_branch and args.pretrained_wsi_ckpt is None:
+        parser.error('--freeze_wsi_branch requires --pretrained_wsi_ckpt')
 
 def seed_torch(seed=7):
     import random
@@ -199,7 +230,17 @@ settings = {'num_splits': args.k,
             'model_size': args.model_size,
             "use_drop_out": args.drop_out,
             'weighted_sample': args.weighted_sample,
-            'opt': args.opt}
+            'opt': args.opt,
+            'fusion_mode': args.fusion_mode,
+            'tabular_csv': args.tabular_csv,
+            'tabular_case_id_col': args.tabular_case_id_col,
+            'tabular_label_col': args.tabular_label_col,
+            'tabular_hidden_dim': args.tabular_hidden_dim,
+            'tabular_num_layers': args.tabular_num_layers,
+            'tabular_top_n_features': args.tabular_top_n_features,
+            'fusion_hidden_dim': args.fusion_hidden_dim,
+            'pretrained_wsi_ckpt': args.pretrained_wsi_ckpt,
+            'freeze_wsi_branch': args.freeze_wsi_branch}
 
 if args.model_type in ['clam_sb', 'clam_mb']:
    settings.update({'bag_weight': args.bag_weight,
@@ -208,9 +249,21 @@ if args.model_type in ['clam_sb', 'clam_mb']:
 
 print('\nLoad Dataset')
 
+def build_mil_dataset(data_dir, **kwargs):
+    if args.fusion_mode is None:
+        return Generic_MIL_Dataset(data_dir=data_dir, **kwargs)
+
+    return Generic_Multimodal_MIL_Dataset(
+        data_dir=data_dir,
+        tabular_csv=args.tabular_csv,
+        tabular_case_id_col=args.tabular_case_id_col,
+        tabular_label_col=args.tabular_label_col,
+        **kwargs,
+    )
+
 if args.task == 'task_1_tumor_vs_normal':
     args.n_classes=2
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/tumor_vs_normal_dummy_clean.csv',
+    dataset = build_mil_dataset(csv_path = 'dataset_csv/tumor_vs_normal_dummy_clean.csv',
                             data_dir= os.path.join(args.data_root_dir, 'tumor_vs_normal_resnet_features'),
                             shuffle = False, 
                             seed = args.seed, 
@@ -221,7 +274,7 @@ if args.task == 'task_1_tumor_vs_normal':
 
 elif args.task == 'task_2_tumor_subtyping':
     args.n_classes=3
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/tumor_subtyping_dummy_clean.csv',
+    dataset = build_mil_dataset(csv_path = 'dataset_csv/tumor_subtyping_dummy_clean.csv',
                             data_dir= os.path.join(args.data_root_dir, 'tumor_subtyping_resnet_features'),
                             shuffle = False,
                             seed = args.seed,
@@ -235,7 +288,7 @@ elif args.task == 'task_2_tumor_subtyping':
 
 elif args.task == 'tcga_brca_recurrence':
     args.n_classes = 2
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/tcga_brca_recurrence.csv',
+    dataset = build_mil_dataset(csv_path = 'dataset_csv/tcga_brca_recurrence.csv',
                             data_dir= args.data_root_dir,
                             shuffle = False,
                             seed = args.seed,
@@ -247,7 +300,7 @@ elif args.task == 'tcga_brca_recurrence':
 
 elif args.task == 'tcga_brca_subtyping':
     args.n_classes = 4
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/tcga_brca_subtyping.csv',
+    dataset = build_mil_dataset(csv_path = 'dataset_csv/tcga_brca_subtyping.csv',
                             data_dir= args.data_root_dir,
                             shuffle = False,
                             seed = args.seed,
@@ -259,7 +312,7 @@ elif args.task == 'tcga_brca_subtyping':
 
 elif args.task == 'nou_ctc_ep':
     args.n_classes = 2
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/nou_ctc_ep.csv',
+    dataset = build_mil_dataset(csv_path = 'dataset_csv/nou_ctc_ep.csv',
                             data_dir= args.data_root_dir,
                             shuffle = False,
                             seed = args.seed,
@@ -271,7 +324,7 @@ elif args.task == 'nou_ctc_ep':
 
 elif args.task == 'nou_ctc_emt':
     args.n_classes = 2
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/nou_ctc_emt.csv',
+    dataset = build_mil_dataset(csv_path = 'dataset_csv/nou_ctc_emt.csv',
                             data_dir= args.data_root_dir,
                             shuffle = False,
                             seed = args.seed,
@@ -283,7 +336,7 @@ elif args.task == 'nou_ctc_emt':
 
 elif args.task == 'nou_ctc_any':
     args.n_classes = 2
-    dataset = Generic_MIL_Dataset(csv_path = 'dataset_csv/nou_ctc_any.csv',
+    dataset = build_mil_dataset(csv_path = 'dataset_csv/nou_ctc_any.csv',
                             data_dir= args.data_root_dir,
                             shuffle = False,
                             seed = args.seed,
@@ -330,5 +383,3 @@ if __name__ == "__main__":
     results = main(args)
     print("finished!")
     print("end script")
-
-
