@@ -1,6 +1,7 @@
 data:
   rna_dir: /workspace/dp-code/.scratch/TCGA-BRCA-rna
   data_path: null
+  slide_csv: null
   class_set: 4class
 
 splits:

@@ -7,6 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models.model_clam import CLAM_MB, CLAM_SB
+from models.model_rna import RNA_MLP
 
 
 class TabularMLPEncoder(nn.Module):
@@ -63,14 +64,17 @@ class CLAMRNAFusion(nn.Module):
         tabular_num_layers: int = 2,
         fusion_hidden_dim: int = 128,
         fusion_mode: str = "concat",
+        rna_hidden_dims=(1024, 512),
+        rna_dropout: float = 0.4,
+        residual_scale: float = 0.2,
     ):
         super().__init__()
         if tabular_input_dim is None:
             raise ValueError("tabular_input_dim is required for multimodal fusion.")
-        if fusion_mode not in {"concat", "gated"}:
-            raise ValueError("fusion_mode must be 'concat' or 'gated'.")
-        if fusion_mode == "gated" and fusion_hidden_dim <= 0:
-            raise ValueError("fusion_hidden_dim must be positive for gated fusion.")
+        if fusion_mode not in {"concat", "gated", "residual"}:
+            raise ValueError("fusion_mode must be 'concat', 'gated', or 'residual'.")
+        if fusion_mode in {"gated", "residual"} and fusion_hidden_dim <= 0:
+            raise ValueError(f"fusion_hidden_dim must be positive for {fusion_mode} fusion.")
 
         if instance_loss_fn is None:
             instance_loss_fn = nn.CrossEntropyLoss()
@@ -96,15 +100,32 @@ class CLAMRNAFusion(nn.Module):
         self.fusion_mode = fusion_mode
         self.n_classes = n_classes
         self.wsi_frozen = False
+        self.rna_frozen = False
+        self.residual_scale = float(residual_scale)
         self.wsi_feature_dim = self.wsi.size_dict[size_arg][1]
-        self.tabular_encoder = TabularMLPEncoder(
-            input_dim=tabular_input_dim,
-            hidden_dim=tabular_hidden_dim,
-            num_layers=tabular_num_layers,
-            dropout=dropout,
-        )
+        self.rna_model = None
+        self.tabular_encoder = None
 
-        fusion_input_dim = self.wsi_feature_dim + self.tabular_encoder.output_dim
+        if fusion_mode == "residual":
+            rna_hidden_dims = _parse_hidden_dims(rna_hidden_dims)
+            self.rna_model = RNA_MLP(
+                input_dim=tabular_input_dim,
+                hidden_dims=rna_hidden_dims,
+                dropout=rna_dropout,
+                n_classes=n_classes,
+            )
+            self.rna_feature_dim = int(self.rna_model.classifier.in_features)
+        else:
+            self.tabular_encoder = TabularMLPEncoder(
+                input_dim=tabular_input_dim,
+                hidden_dim=tabular_hidden_dim,
+                num_layers=tabular_num_layers,
+                dropout=dropout,
+            )
+
+        fusion_input_dim = self.wsi_feature_dim + (
+            self.rna_feature_dim if fusion_mode == "residual" else self.tabular_encoder.output_dim
+        )
         if fusion_mode == "concat" and fusion_hidden_dim and fusion_hidden_dim > 0:
             self.fusion_head = nn.Sequential(
                 nn.Linear(fusion_input_dim, fusion_hidden_dim),
@@ -116,7 +137,7 @@ class CLAMRNAFusion(nn.Module):
         elif fusion_mode == "concat":
             self.fusion_head = nn.Linear(fusion_input_dim, n_classes)
             self.fusion_head.apply(_initialize_weights)
-        else:
+        elif fusion_mode == "gated":
             self.wsi_projection = nn.Sequential(
                 nn.Linear(self.wsi_feature_dim, fusion_hidden_dim),
                 nn.LayerNorm(fusion_hidden_dim),
@@ -138,11 +159,38 @@ class CLAMRNAFusion(nn.Module):
             self.tabular_projection.apply(_initialize_weights)
             self.fusion_gate.apply(_initialize_weights)
             self.fusion_classifier.apply(_initialize_weights)
+        else:
+            self.wsi_projection = nn.Sequential(
+                nn.Linear(self.wsi_feature_dim, fusion_hidden_dim),
+                nn.LayerNorm(fusion_hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+            )
+            self.rna_projection = nn.Sequential(
+                nn.Linear(self.rna_feature_dim, fusion_hidden_dim),
+                nn.LayerNorm(fusion_hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+            )
+            self.residual_head = nn.Sequential(
+                nn.Linear(2 * fusion_hidden_dim, fusion_hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+                nn.Linear(fusion_hidden_dim, n_classes),
+            )
+            self.wsi_projection.apply(_initialize_weights)
+            self.rna_projection.apply(_initialize_weights)
+            self.residual_head.apply(_initialize_weights)
+            # Start exactly from the RNA model and let WSI learn conservative corrections.
+            nn.init.zeros_(self.residual_head[-1].weight)
+            nn.init.zeros_(self.residual_head[-1].bias)
 
     def train(self, mode: bool = True):
         super().train(mode)
         if self.wsi_frozen:
             self.wsi.eval()
+        if self.rna_frozen and self.rna_model is not None:
+            self.rna_model.eval()
         return self
 
     def freeze_wsi_branch(self) -> None:
@@ -172,6 +220,23 @@ class CLAMRNAFusion(nn.Module):
                 f"Missing keys: {critical_missing[:5]}, unexpected keys: {unexpected[:5]}"
             )
 
+    def load_rna_checkpoint(self, ckpt_path: str) -> None:
+        if self.rna_model is None:
+            raise RuntimeError("RNA checkpoints are only supported for residual fusion.")
+
+        checkpoint = torch.load(ckpt_path, map_location="cpu")
+        state_dict = checkpoint["model_state_dict"] if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint else checkpoint
+        state_dict = {key.replace(".module", ""): value for key, value in state_dict.items()}
+        self.rna_model.load_state_dict(state_dict, strict=True)
+
+    def freeze_rna_branch(self) -> None:
+        if self.rna_model is None:
+            return
+        self.rna_frozen = True
+        self.rna_model.eval()
+        for param in self.rna_model.parameters():
+            param.requires_grad = False
+
     def forward(self, inputs, label=None, instance_eval=False, return_features=False, attention_only=False):
         if not isinstance(inputs, (tuple, list)) or len(inputs) != 2:
             raise ValueError("CLAMRNAFusion expects inputs=(wsi_features, tabular_features).")
@@ -187,13 +252,18 @@ class CLAMRNAFusion(nn.Module):
             _, _, _, attention, wsi_results = self.wsi(wsi_features, return_features=True)
 
         pooled_wsi = self._pool_wsi_features(wsi_results["features"])
-        encoded_tabular = self.tabular_encoder(tabular_features)
+        encoded_tabular = None
         if self.fusion_mode == "concat":
+            encoded_tabular = self.tabular_encoder(tabular_features)
             fused_features = torch.cat([pooled_wsi, encoded_tabular], dim=1)
             logits = self.fusion_head(fused_features)
             fusion_gate = None
-        else:
+        elif self.fusion_mode == "gated":
+            encoded_tabular = self.tabular_encoder(tabular_features)
             logits, fused_features, fusion_gate = self._gated_fusion(pooled_wsi, encoded_tabular)
+        else:
+            logits, fused_features, encoded_tabular = self._residual_fusion(pooled_wsi, tabular_features)
+            fusion_gate = None
 
         y_hat = torch.topk(logits, 1, dim=1)[1]
         y_prob = F.softmax(logits, dim=1)
@@ -220,6 +290,27 @@ class CLAMRNAFusion(nn.Module):
             if fusion_gate is not None:
                 results["fusion_gate"] = fusion_gate
         return logits, y_prob, y_hat, attention, results
+
+    def _residual_fusion(
+        self,
+        wsi_features: torch.Tensor,
+        tabular_features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.rna_model is None:
+            raise RuntimeError("Residual fusion requires an RNA model.")
+
+        if self.rna_frozen:
+            with torch.no_grad():
+                rna_logits, rna_features = self.rna_model(tabular_features.float(), return_features=True)
+        else:
+            rna_logits, rna_features = self.rna_model(tabular_features.float(), return_features=True)
+
+        projected_wsi = self.wsi_projection(wsi_features)
+        projected_rna = self.rna_projection(rna_features)
+        fused_features = torch.cat([projected_wsi, projected_rna], dim=1)
+        delta_logits = self.residual_head(fused_features)
+        logits = rna_logits + self.residual_scale * delta_logits
+        return logits, fused_features, rna_features
 
     def _gated_fusion(
         self,
@@ -257,3 +348,13 @@ def _initialize_weights(module: nn.Module) -> None:
     elif isinstance(module, nn.LayerNorm):
         nn.init.ones_(module.weight)
         nn.init.zeros_(module.bias)
+
+
+def _parse_hidden_dims(value) -> tuple[int, ...]:
+    if isinstance(value, str):
+        return tuple(int(dim.strip()) for dim in value.split(",") if dim.strip())
+    if isinstance(value, (list, tuple)):
+        return tuple(int(dim) for dim in value)
+    if value is None:
+        return ()
+    return (int(value),)

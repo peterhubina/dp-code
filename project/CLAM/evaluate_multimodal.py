@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument("--embed_dim", type=int, default=1536)
     parser.add_argument("--model_type", type=str, choices=["clam_sb", "clam_mb"], default="clam_mb")
     parser.add_argument("--model_size", type=str, choices=["small", "big"], default="big")
-    parser.add_argument("--fusion_mode", type=str, choices=["auto", "concat", "gated"], default="auto")
+    parser.add_argument("--fusion_mode", type=str, choices=["auto", "concat", "gated", "residual"], default="auto")
     parser.add_argument("--drop_out", type=float, default=0.5)
     parser.add_argument("--B", type=int, default=4)
     parser.add_argument("--tabular_case_id_col", type=str, default="case_id")
@@ -68,6 +68,9 @@ def parse_args():
     parser.add_argument("--tabular_hidden_dim", type=int, default=256)
     parser.add_argument("--tabular_num_layers", type=int, default=2)
     parser.add_argument("--fusion_hidden_dim", type=int, default=32)
+    parser.add_argument("--rna_hidden_dims", type=str, default="1024,512")
+    parser.add_argument("--rna_dropout", type=float, default=0.4)
+    parser.add_argument("--residual_scale", type=float, default=0.2)
     parser.add_argument("--wandb", action="store_true", default=False)
     parser.add_argument("--wandb_project", type=str, default="clam-brca-subtyping-cv")
     parser.add_argument("--wandb_entity", type=str, default=None)
@@ -107,10 +110,16 @@ def normalize_checkpoint(checkpoint: dict) -> dict:
 def infer_fusion_mode(checkpoint: dict, ckpt_path: Path) -> str:
     has_concat_head = any(key.startswith("fusion_head.") for key in checkpoint)
     has_gated_head = any(
-        key.startswith(("wsi_projection.", "tabular_projection.", "fusion_gate.", "fusion_classifier."))
+        key.startswith(("tabular_projection.", "fusion_gate.", "fusion_classifier."))
+        for key in checkpoint
+    )
+    has_residual_head = any(
+        key.startswith(("rna_model.", "rna_projection.", "residual_head."))
         for key in checkpoint
     )
 
+    if has_residual_head and not has_concat_head and not has_gated_head:
+        return "residual"
     if has_concat_head and not has_gated_head:
         return "concat"
     if has_gated_head and not has_concat_head:
@@ -147,6 +156,9 @@ def load_model(args, tabular_input_dim: int, ckpt_path: Path, device: torch.devi
         tabular_num_layers=args.tabular_num_layers,
         fusion_hidden_dim=args.fusion_hidden_dim,
         fusion_mode=fusion_mode,
+        rna_hidden_dims=args.rna_hidden_dims,
+        rna_dropout=args.rna_dropout,
+        residual_scale=args.residual_scale,
     )
 
     model.load_state_dict(checkpoint, strict=True)

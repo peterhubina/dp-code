@@ -152,8 +152,8 @@ parser.add_argument('--weighted_sample', action='store_true', default=False, hel
 parser.add_argument('--model_size', type=str, choices=['small', 'big'], default='small', help='size of model, does not affect mil')
 parser.add_argument('--task', type=str, choices=['task_1_tumor_vs_normal', 'task_2_tumor_subtyping', 'tcga_brca_recurrence', 'tcga_brca_subtyping', 'nou_ctc_ep', 'nou_ctc_emt', 'nou_ctc_any'])
 ### Multimodal fusion options
-parser.add_argument('--fusion_mode', type=str, choices=['concat', 'gated'], default=None,
-                    help='enable WSI + tabular multimodal fusion; supports concat and gated')
+parser.add_argument('--fusion_mode', type=str, choices=['concat', 'gated', 'residual'], default=None,
+                    help='enable WSI + tabular multimodal fusion; supports concat, gated and residual')
 parser.add_argument('--tabular_csv', type=str, default=None,
                     help='CSV containing case_id, label and RNA/tabular feature columns')
 parser.add_argument('--tabular_case_id_col', type=str, default='case_id',
@@ -172,6 +172,16 @@ parser.add_argument('--pretrained_wsi_ckpt', type=str, default=None,
                     help='optional WSI-only CLAM checkpoint used to initialize the WSI branch; may include {fold}')
 parser.add_argument('--freeze_wsi_branch', action='store_true', default=False,
                     help='freeze the WSI branch after loading --pretrained_wsi_ckpt')
+parser.add_argument('--pretrained_rna_ckpt', type=str, default=None,
+                    help='optional matched RNA checkpoint used by residual fusion; may include {fold}')
+parser.add_argument('--freeze_rna_branch', action='store_true', default=False,
+                    help='freeze the RNA branch after loading --pretrained_rna_ckpt')
+parser.add_argument('--rna_hidden_dims', type=str, default='1024,512',
+                    help='hidden dimensions for the residual RNA MLP branch')
+parser.add_argument('--rna_dropout', type=float, default=0.4,
+                    help='dropout used when constructing the residual RNA MLP branch')
+parser.add_argument('--residual_scale', type=float, default=0.2,
+                    help='scale applied to WSI-conditioned residual logits')
 ### CLAM specific options
 parser.add_argument('--no_inst_cluster', action='store_true', default=False,
                      help='disable instance-level clustering')
@@ -198,6 +208,8 @@ if args.fusion_mode is not None:
         parser.error('--fusion_mode requires --model_type clam_sb or clam_mb')
     if args.freeze_wsi_branch and args.pretrained_wsi_ckpt is None:
         parser.error('--freeze_wsi_branch requires --pretrained_wsi_ckpt')
+    if args.fusion_mode == 'residual' and args.pretrained_rna_ckpt is None:
+        parser.error('--fusion_mode residual requires --pretrained_rna_ckpt')
 
 def seed_torch(seed=7):
     import random
@@ -240,7 +252,12 @@ settings = {'num_splits': args.k,
             'tabular_top_n_features': args.tabular_top_n_features,
             'fusion_hidden_dim': args.fusion_hidden_dim,
             'pretrained_wsi_ckpt': args.pretrained_wsi_ckpt,
-            'freeze_wsi_branch': args.freeze_wsi_branch}
+            'freeze_wsi_branch': args.freeze_wsi_branch,
+            'pretrained_rna_ckpt': args.pretrained_rna_ckpt,
+            'freeze_rna_branch': args.freeze_rna_branch,
+            'rna_hidden_dims': args.rna_hidden_dims,
+            'rna_dropout': args.rna_dropout,
+            'residual_scale': args.residual_scale}
 
 if args.model_type in ['clam_sb', 'clam_mb']:
    settings.update({'bag_weight': args.bag_weight,

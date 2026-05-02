@@ -1,0 +1,116 @@
+{
+  "rna_dir": "/workspace/dp-code/.scratch/TCGA-BRCA-rna",
+  "data_path": "/workspace/dp-code/.scratch/TCGA-BRCA-rna/TCGA_BRCA_RNA_primary_tumor_4class_clam.csv.gz",
+  "slide_csv": "/workspace/dp-code/project/CLAM/dataset_csv/tcga_brca_subtyping.csv",
+  "class_set": "4class",
+  "k": 10,
+  "k_start": -1,
+  "k_end": -1,
+  "seed": 1,
+  "label_frac": 1.0,
+  "val_frac": 0.1,
+  "test_frac": 0.1,
+  "split_dir": "/workspace/dp-code/project/CLAM/splits/tcga_brca_subtyping_100",
+  "force_splits": false,
+  "no_auto_splits": true,
+  "results_dir": "/workspace/dp-code/project/CLAM/results/tcga_brca_rna_matched_wsi_4class_s1",
+  "exp_code": "tcga_brca_rna_matched_wsi",
+  "max_epochs": 80,
+  "batch_size": 64,
+  "lr": 0.0001974649844750422,
+  "reg": 0.000700547778589361,
+  "opt": "adamw",
+  "hidden_dims": [
+    1024,
+    512
+  ],
+  "drop_out": 0.4,
+  "label_smoothing": 0.05,
+  "top_n_genes": 10000,
+  "weighted_loss": true,
+  "weighted_sample": true,
+  "early_stopping": true,
+  "patience": 16,
+  "grad_clip": 0.0,
+  "num_workers": 0,
+  "wandb": true,
+  "wandb_project": "rna-subtyping",
+  "wandb_entity": null,
+  "wandb_tags": [
+    "rna",
+    "tcga-brca",
+    "matched-wsi-slides",
+    "best-sweep-config"
+  ],
+  "wandb_mode": null,
+  "wandb_log_artifacts": false,
+  "hydra_config": {
+    "data": {
+      "rna_dir": "/workspace/dp-code/.scratch/TCGA-BRCA-rna",
+      "data_path": null,
+      "slide_csv": "dataset_csv/tcga_brca_subtyping.csv",
+      "class_set": "4class"
+    },
+    "splits": {
+      "k": 10,
+      "k_start": -1,
+      "k_end": -1,
+      "label_frac": 1.0,
+      "val_frac": 0.1,
+      "test_frac": 0.1,
+      "split_dir": "tcga_brca_subtyping_100",
+      "force_splits": false,
+      "no_auto_splits": true
+    },
+    "model": {
+      "hidden_dims": [
+        1024,
+        512
+      ],
+      "drop_out": 0.4,
+      "top_n_genes": 10000
+    },
+    "optim": {
+      "opt": "adamw",
+      "lr": 0.0001974649844750422,
+      "reg": 0.000700547778589361,
+      "label_smoothing": 0.05
+    },
+    "train": {
+      "seed": 1,
+      "max_epochs": 80,
+      "batch_size": 64,
+      "weighted_loss": true,
+      "weighted_sample": true,
+      "early_stopping": true,
+      "patience": 16,
+      "grad_clip": 0.0,
+      "num_workers": 0
+    },
+    "wandb": {
+      "enabled": true,
+      "project": "rna-subtyping",
+      "entity": null,
+      "mode": null,
+      "tags": [
+        "rna",
+        "tcga-brca",
+        "matched-wsi-slides",
+        "best-sweep-config"
+      ],
+      "log_artifacts": false
+    },
+    "output": {
+      "results_dir": "./results",
+      "exp_code": "tcga_brca_rna_matched_wsi"
+    }
+  },
+  "class_names": [
+    "LumA",
+    "LumB",
+    "Basal",
+    "Her2"
+  ],
+  "n_samples": 974,
+  "n_genes": 20530
+}

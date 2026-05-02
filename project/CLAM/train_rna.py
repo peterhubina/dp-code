@@ -141,6 +141,19 @@ def resolve_data_path(args) -> Path:
     return Path(args.rna_dir) / f"TCGA_BRCA_RNA_primary_tumor_{args.class_set}_clam.csv.gz"
 
 
+def resolve_slide_csv(args, clam_dir: Path) -> Path | None:
+    slide_csv = getattr(args, "slide_csv", None)
+    if not slide_csv:
+        return None
+
+    path = Path(slide_csv)
+    if path.is_absolute():
+        return path
+    if path.parts and path.parts[0] == "dataset_csv":
+        return clam_dir / path
+    return clam_dir / "dataset_csv" / path
+
+
 def resolve_split_dir(args, clam_dir: Path) -> Path:
     default_name = f"tcga_brca_rna_{args.class_set}_{int(args.label_frac * 100)}"
     if args.split_dir is None:
@@ -253,6 +266,70 @@ def read_split(split_path: Path, metadata: pd.DataFrame) -> dict[str, np.ndarray
         split_indices[split] = sample_to_idx.loc[sample_ids].to_numpy(dtype=np.int64)
 
     return split_indices
+
+
+def build_slide_level_rna_table(
+    metadata: pd.DataFrame,
+    features: np.ndarray,
+    slide_csv: Path,
+    label_dict: dict[str, int],
+) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    slide_df = pd.read_csv(slide_csv)
+    missing_cols = [col for col in ("case_id", "slide_id", "label") if col not in slide_df.columns]
+    if missing_cols:
+        raise ValueError(f"{slide_csv} is missing required columns: {missing_cols}")
+
+    slide_df = slide_df[slide_df["label"].isin(label_dict)].copy()
+    slide_df["case_id"] = slide_df["case_id"].astype(str)
+    slide_df["slide_id"] = slide_df["slide_id"].astype(str)
+    slide_df["label_idx"] = slide_df["label"].map(label_dict).astype(np.int64)
+
+    rna_metadata = metadata.copy()
+    rna_metadata["case_id"] = rna_metadata["case_id"].astype(str)
+    keep = ~rna_metadata["case_id"].duplicated(keep="first")
+    rna_metadata = rna_metadata.loc[keep].reset_index(drop=True)
+    rna_features = features[keep.to_numpy()]
+    rna_metadata["rna_row_idx"] = np.arange(len(rna_metadata), dtype=np.int64)
+
+    merged = slide_df.merge(
+        rna_metadata[["case_id", "sample", "label", "label_idx", "rna_row_idx"]],
+        on="case_id",
+        how="inner",
+        suffixes=("_slide", "_rna"),
+    )
+    if merged.empty:
+        raise ValueError(f"No slides in {slide_csv} have matched RNA rows.")
+
+    n_missing = slide_df["case_id"].nunique() - merged["case_id"].nunique()
+    if n_missing:
+        print(f"Excluding {n_missing} slide cases without matched RNA rows.")
+
+    mismatched = merged[merged["label_idx_slide"] != merged["label_idx_rna"]]
+    if not mismatched.empty:
+        examples = mismatched[["case_id", "slide_id", "label_slide", "label_rna"]].head().to_dict("records")
+        raise ValueError(f"WSI slide labels and RNA labels disagree. Examples: {examples}")
+
+    slide_metadata = pd.DataFrame(
+        {
+            "case_id": merged["case_id"].astype(str),
+            "sample": merged["slide_id"].astype(str),
+            "slide_id": merged["slide_id"].astype(str),
+            "rna_sample": merged["sample"].astype(str),
+            "label": merged["label_slide"].astype(str),
+            "label_idx": merged["label_idx_slide"].astype(np.int64),
+        }
+    )
+    slide_features = rna_features[merged["rna_row_idx"].to_numpy(dtype=np.int64)]
+    slide_labels = slide_metadata["label_idx"].to_numpy(dtype=np.int64)
+
+    print(
+        "Using slide-level RNA table with {} slides, {} cases, and {} genes.".format(
+            len(slide_metadata),
+            slide_metadata["case_id"].nunique(),
+            slide_features.shape[1],
+        )
+    )
+    return slide_metadata.reset_index(drop=True), slide_features.astype(np.float32, copy=False), slide_labels
 
 
 def make_loader(
@@ -583,6 +660,12 @@ def build_arg_parser(default_rna_dir: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="RNA-only TCGA-BRCA molecular subtype training")
     parser.add_argument("--rna_dir", type=str, default=str(default_rna_dir))
     parser.add_argument("--data_path", type=str, default=None)
+    parser.add_argument(
+        "--slide_csv",
+        type=str,
+        default=None,
+        help="optional WSI slide CSV used to replicate RNA rows to the matched slide-level cohort",
+    )
     parser.add_argument("--class_set", type=str, choices=["4class", "5class"], default="4class")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--k_start", type=int, default=-1)
@@ -630,9 +713,17 @@ def run_experiment(args, clam_dir: Path | None = None) -> pd.DataFrame:
     class_names = CLASS_NAMES[args.class_set]
     label_dict = {class_name: i for i, class_name in enumerate(class_names)}
     data_path = resolve_data_path(args)
+    slide_csv = resolve_slide_csv(args, clam_dir)
     split_dir = resolve_split_dir(args, clam_dir)
 
     metadata, features, labels, feature_names = read_rna_clam_table(data_path, label_dict)
+    if slide_csv is not None:
+        metadata, features, labels = build_slide_level_rna_table(
+            metadata=metadata,
+            features=features,
+            slide_csv=slide_csv,
+            label_dict=label_dict,
+        )
 
     expected_split_files = [split_dir / f"splits_{fold}.csv" for fold in range(args.k)]
     missing_split_files = [path for path in expected_split_files if not path.is_file()]
@@ -668,6 +759,7 @@ def run_experiment(args, clam_dir: Path | None = None) -> pd.DataFrame:
     settings.update(
         {
             "data_path": str(data_path),
+            "slide_csv": str(slide_csv) if slide_csv is not None else None,
             "split_dir": str(split_dir),
             "results_dir": str(results_dir),
             "class_names": class_names,

@@ -1,0 +1,20 @@
+defaults:
+  - best_sweep
+  - _self_
+
+data:
+  slide_csv: dataset_csv/tcga_brca_subtyping.csv
+
+splits:
+  split_dir: tcga_brca_subtyping_100
+  no_auto_splits: true
+
+wandb:
+  tags:
+    - rna
+    - tcga-brca
+    - matched-wsi-slides
+    - best-sweep-config
+
+output:
+  exp_code: tcga_brca_rna_matched_wsi

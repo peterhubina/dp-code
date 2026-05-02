@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 from dataset_modules.dataset_generic import save_splits
+from dataset_modules.rna_dataset import RNAFeatureTransform
 from models.model_mil import MIL_fc, MIL_fc_mc
 from models.model_clam import CLAM_MB, CLAM_SB
 from models.model_multimodal import CLAMRNAFusion
@@ -49,6 +50,32 @@ def _fold_path(path, fold):
     return path.format(fold=fold)
 
 
+def _parse_hidden_dims(value):
+    if value is None:
+        return ()
+    if isinstance(value, (list, tuple)):
+        return tuple(int(dim) for dim in value)
+    return tuple(int(dim.strip()) for dim in str(value).split(',') if dim.strip())
+
+
+def _load_rna_transform_from_checkpoint(ckpt_path):
+    checkpoint = torch.load(ckpt_path, map_location='cpu')
+    required = ('selected_idx', 'selected_feature_names', 'mean', 'std')
+    missing = [key for key in required if key not in checkpoint]
+    if missing:
+        raise ValueError(
+            'RNA checkpoint {} does not contain transform fields: {}'.format(
+                ckpt_path, missing
+            )
+        )
+    return RNAFeatureTransform(
+        selected_idx=np.asarray(checkpoint['selected_idx'], dtype=np.int64),
+        selected_feature_names=list(checkpoint['selected_feature_names']),
+        mean=np.asarray(checkpoint['mean'], dtype=np.float32),
+        std=np.asarray(checkpoint['std'], dtype=np.float32),
+    )
+
+
 def _compute_auc(labels, prob, n_classes):
     labels = np.asarray(labels)
     if len(np.unique(labels)) < 2:
@@ -73,22 +100,36 @@ def _compute_auc(labels, prob, n_classes):
         return float('nan')
 
 
-def _fit_multimodal_transform(train_split, val_split, test_split, args):
+def _fit_multimodal_transform(train_split, val_split, test_split, args, fold=None):
     if not hasattr(train_split, 'fit_tabular_transform'):
         return None
 
-    transform = train_split.fit_tabular_transform(
-        top_n_features=getattr(args, 'tabular_top_n_features', 0)
-    )
+    pretrained_rna_ckpt = getattr(args, 'pretrained_rna_ckpt', None)
+    if getattr(args, 'fusion_mode', None) == 'residual' and pretrained_rna_ckpt:
+        if fold is None:
+            raise ValueError('fold is required when loading a residual RNA transform.')
+        rna_ckpt_path = _fold_path(pretrained_rna_ckpt, fold)
+        transform = _load_rna_transform_from_checkpoint(rna_ckpt_path)
+        train_split.set_tabular_transform(transform)
+        print(
+            'Loaded RNA transform with {} selected features from {}.'.format(
+                len(transform.selected_feature_names),
+                rna_ckpt_path,
+            )
+        )
+    else:
+        transform = train_split.fit_tabular_transform(
+            top_n_features=getattr(args, 'tabular_top_n_features', 0)
+        )
+        print(
+            'Fitted tabular transform with {} selected features.'.format(
+                len(transform.selected_feature_names)
+            )
+        )
     for split in (val_split, test_split):
         if split is not None and hasattr(split, 'set_tabular_transform'):
             split.set_tabular_transform(transform)
 
-    print(
-        'Fitted tabular transform with {} selected features.'.format(
-            len(transform.selected_feature_names)
-        )
-    )
     return transform
 
 
@@ -261,7 +302,7 @@ def train(datasets, cur, args):
     print("Training on {} samples".format(len(train_split)))
     print("Validating on {} samples".format(len(val_split)))
     print("Testing on {} samples".format(len(test_split) if test_split is not None else 0))
-    _fit_multimodal_transform(train_split, val_split, test_split, args)
+    _fit_multimodal_transform(train_split, val_split, test_split, args, cur)
 
     print('\nInit loss function...', end=' ')
     if args.bag_loss == 'svm':
@@ -294,6 +335,9 @@ def train(datasets, cur, args):
             tabular_num_layers=args.tabular_num_layers,
             fusion_hidden_dim=args.fusion_hidden_dim,
             fusion_mode=args.fusion_mode,
+            rna_hidden_dims=_parse_hidden_dims(getattr(args, 'rna_hidden_dims', '1024,512')),
+            rna_dropout=getattr(args, 'rna_dropout', 0.4),
+            residual_scale=getattr(args, 'residual_scale', 0.2),
             k_sample=args.B,
             subtyping=args.subtyping,
             **model_dict,
@@ -303,9 +347,16 @@ def train(datasets, cur, args):
             wsi_ckpt_path = _fold_path(args.pretrained_wsi_ckpt, cur)
             model.load_wsi_checkpoint(wsi_ckpt_path)
             print('Loaded pretrained WSI branch from {}'.format(wsi_ckpt_path))
+        if getattr(args, 'pretrained_rna_ckpt', None):
+            rna_ckpt_path = _fold_path(args.pretrained_rna_ckpt, cur)
+            model.load_rna_checkpoint(rna_ckpt_path)
+            print('Loaded pretrained RNA branch from {}'.format(rna_ckpt_path))
         if getattr(args, 'freeze_wsi_branch', False):
             model.freeze_wsi_branch()
             print('Frozen WSI branch parameters.')
+        if getattr(args, 'freeze_rna_branch', False):
+            model.freeze_rna_branch()
+            print('Frozen RNA branch parameters.')
 
     elif args.model_type in ['clam_sb', 'clam_mb']:
         if args.subtyping:

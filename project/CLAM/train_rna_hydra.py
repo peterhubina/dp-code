@@ -25,6 +25,7 @@ def args_from_cfg(cfg: DictConfig) -> SimpleNamespace:
     return SimpleNamespace(
         rna_dir=str(cfg.data.rna_dir),
         data_path=_none_if_missing(cfg.data.data_path),
+        slide_csv=_none_if_missing(cfg.data.slide_csv),
         class_set=str(cfg.data.class_set),
         k=int(cfg.splits.k),
         k_start=int(cfg.splits.k_start),

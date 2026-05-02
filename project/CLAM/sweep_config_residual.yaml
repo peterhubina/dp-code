@@ -1,0 +1,25 @@
+program: sweep_train_residual.py
+project: clam-brca-subtyping-residual
+method: bayes
+metric:
+  name: final/val_auc
+  goal: maximize
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.0005
+  reg:
+    distribution: log_uniform_values
+    min: 0.00000001
+    max: 0.0001
+  drop_out:
+    values: [0.0, 0.25, 0.5]
+  fusion_hidden_dim:
+    values: [16, 32, 64]
+  residual_scale:
+    values: [0.05, 0.1, 0.2, 0.4]
+  patience:
+    values: [5, 8]
+  max_epochs:
+    value: 30
