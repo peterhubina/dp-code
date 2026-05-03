@@ -1,0 +1,6 @@
+C,objective,cv_objective
+0.01,balanced_accuracy,0.8418181818181818
+0.03,balanced_accuracy,0.8363636363636363
+0.1,balanced_accuracy,0.8363636363636363
+0.3,balanced_accuracy,0.8263636363636364
+1.0,balanced_accuracy,0.8163636363636364

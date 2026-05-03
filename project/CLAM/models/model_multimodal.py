@@ -71,9 +71,9 @@ class CLAMRNAFusion(nn.Module):
         super().__init__()
         if tabular_input_dim is None:
             raise ValueError("tabular_input_dim is required for multimodal fusion.")
-        if fusion_mode not in {"concat", "gated", "residual"}:
-            raise ValueError("fusion_mode must be 'concat', 'gated', or 'residual'.")
-        if fusion_mode in {"gated", "residual"} and fusion_hidden_dim <= 0:
+        if fusion_mode not in {"concat", "gated", "residual", "cross_attention"}:
+            raise ValueError("fusion_mode must be 'concat', 'gated', 'residual', or 'cross_attention'.")
+        if fusion_mode in {"gated", "residual", "cross_attention"} and fusion_hidden_dim <= 0:
             raise ValueError(f"fusion_hidden_dim must be positive for {fusion_mode} fusion.")
 
         if instance_loss_fn is None:
@@ -158,6 +158,31 @@ class CLAMRNAFusion(nn.Module):
             self.wsi_projection.apply(_initialize_weights)
             self.tabular_projection.apply(_initialize_weights)
             self.fusion_gate.apply(_initialize_weights)
+            self.fusion_classifier.apply(_initialize_weights)
+        elif fusion_mode == "cross_attention":
+            self.wsi_projection = nn.Sequential(
+                nn.Linear(self.wsi_feature_dim, fusion_hidden_dim),
+                nn.LayerNorm(fusion_hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+            )
+            self.tabular_projection = nn.Sequential(
+                nn.Linear(self.tabular_encoder.output_dim, fusion_hidden_dim),
+                nn.LayerNorm(fusion_hidden_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout),
+            )
+            self.cross_attention = nn.MultiheadAttention(
+                embed_dim=fusion_hidden_dim,
+                num_heads=1,
+                dropout=dropout,
+                batch_first=True,
+            )
+            self.cross_attention_norm = nn.LayerNorm(fusion_hidden_dim)
+            self.fusion_classifier = nn.Linear(2 * fusion_hidden_dim, n_classes)
+            self.wsi_projection.apply(_initialize_weights)
+            self.tabular_projection.apply(_initialize_weights)
+            self.cross_attention_norm.apply(_initialize_weights)
             self.fusion_classifier.apply(_initialize_weights)
         else:
             self.wsi_projection = nn.Sequential(
@@ -253,6 +278,7 @@ class CLAMRNAFusion(nn.Module):
 
         pooled_wsi = self._pool_wsi_features(wsi_results["features"])
         encoded_tabular = None
+        fusion_metrics = {}
         if self.fusion_mode == "concat":
             encoded_tabular = self.tabular_encoder(tabular_features)
             fused_features = torch.cat([pooled_wsi, encoded_tabular], dim=1)
@@ -261,6 +287,14 @@ class CLAMRNAFusion(nn.Module):
         elif self.fusion_mode == "gated":
             encoded_tabular = self.tabular_encoder(tabular_features)
             logits, fused_features, fusion_gate = self._gated_fusion(pooled_wsi, encoded_tabular)
+        elif self.fusion_mode == "cross_attention":
+            encoded_tabular = self.tabular_encoder(tabular_features)
+            logits, fused_features, fusion_attention = self._cross_attention_fusion(pooled_wsi, encoded_tabular)
+            fusion_gate = None
+            fusion_metrics = {
+                "fusion_wsi_to_rna_attention": fusion_attention[:, 0, 1].mean(),
+                "fusion_rna_to_wsi_attention": fusion_attention[:, 1, 0].mean(),
+            }
         else:
             logits, fused_features, encoded_tabular = self._residual_fusion(pooled_wsi, tabular_features)
             fusion_gate = None
@@ -278,6 +312,7 @@ class CLAMRNAFusion(nn.Module):
                     "fusion_gate_std": fusion_gate.std(unbiased=False),
                 }
             )
+        results.update(fusion_metrics)
 
         if return_features:
             results.update(
@@ -289,6 +324,8 @@ class CLAMRNAFusion(nn.Module):
             )
             if fusion_gate is not None:
                 results["fusion_gate"] = fusion_gate
+            if self.fusion_mode == "cross_attention":
+                results["fusion_attention"] = fusion_attention
         return logits, y_prob, y_hat, attention, results
 
     def _residual_fusion(
@@ -323,6 +360,20 @@ class CLAMRNAFusion(nn.Module):
         fused_features = fusion_gate * projected_wsi + (1.0 - fusion_gate) * projected_tabular
         logits = self.fusion_classifier(fused_features)
         return logits, fused_features, fusion_gate
+
+    def _cross_attention_fusion(
+        self,
+        wsi_features: torch.Tensor,
+        tabular_features: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        projected_wsi = self.wsi_projection(wsi_features)
+        projected_tabular = self.tabular_projection(tabular_features)
+        tokens = torch.stack([projected_wsi, projected_tabular], dim=1)
+        attended, attention_weights = self.cross_attention(tokens, tokens, tokens, need_weights=True)
+        attended = self.cross_attention_norm(attended + tokens)
+        fused_features = attended.flatten(start_dim=1)
+        logits = self.fusion_classifier(fused_features)
+        return logits, fused_features, attention_weights
 
     @staticmethod
     def _pool_wsi_features(features: torch.Tensor) -> torch.Tensor:

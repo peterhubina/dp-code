@@ -25,6 +25,8 @@ FUSION_RESULT_KEYS = (
     'fusion_wsi_gate_mean',
     'fusion_rna_gate_mean',
     'fusion_gate_std',
+    'fusion_wsi_to_rna_attention',
+    'fusion_rna_to_wsi_attention',
 )
 
 

@@ -152,8 +152,8 @@ parser.add_argument('--weighted_sample', action='store_true', default=False, hel
 parser.add_argument('--model_size', type=str, choices=['small', 'big'], default='small', help='size of model, does not affect mil')
 parser.add_argument('--task', type=str, choices=['task_1_tumor_vs_normal', 'task_2_tumor_subtyping', 'tcga_brca_recurrence', 'tcga_brca_subtyping', 'nou_ctc_ep', 'nou_ctc_emt', 'nou_ctc_any'])
 ### Multimodal fusion options
-parser.add_argument('--fusion_mode', type=str, choices=['concat', 'gated', 'residual'], default=None,
-                    help='enable WSI + tabular multimodal fusion; supports concat, gated and residual')
+parser.add_argument('--fusion_mode', type=str, choices=['concat', 'gated', 'residual', 'cross_attention'], default=None,
+                    help='enable WSI + tabular multimodal fusion; supports concat, gated, residual and cross_attention')
 parser.add_argument('--tabular_csv', type=str, default=None,
                     help='CSV containing case_id, label and RNA/tabular feature columns')
 parser.add_argument('--tabular_case_id_col', type=str, default='case_id',

@@ -1,0 +1,18 @@
+{
+  "rna_results_dir": "/workspace/dp-code/project/CLAM/results/tcga_brca_rna_matched_wsi_4class_s1",
+  "wsi_pred_dir": "/workspace/dp-code/.scratch/results/pam50_wsi_rna_lateprob_eval",
+  "concat_val_dir": "/workspace/dp-code/project/CLAM/tmp_eval/pam50_wsi_rna_latefusion_val_eval",
+  "concat_test_dir": "/workspace/dp-code/.scratch/results/pam50_wsi_rna_latefusion_eval",
+  "gated_val_dir": "/workspace/dp-code/project/CLAM/tmp_eval/pam50_wsi_rna_gatedfusion_val_eval",
+  "gated_test_dir": "/workspace/dp-code/.scratch/results/pam50_wsi_rna_gatedfusion_eval",
+  "residual_val_dir": "/workspace/dp-code/project/CLAM/tmp_eval/pam50_wsi_rna_residual_bestval_val_eval",
+  "residual_test_dir": "/workspace/dp-code/.scratch/results/pam50_wsi_rna_residual_bestval_eval",
+  "output_dir": "/workspace/dp-code/project/CLAM/tmp_eval/selective_ensemble_balanced",
+  "objective": "balanced_accuracy",
+  "weight_step": 0.1,
+  "rna_heavy_step": 0.05,
+  "max_aux_weight": 0.5,
+  "k": 10,
+  "k_start": 0,
+  "k_end": -1
+}

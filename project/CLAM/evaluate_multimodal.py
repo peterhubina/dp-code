@@ -40,6 +40,13 @@ except ImportError:
 CLASS_NAMES = ["LumA", "LumB", "Basal", "Her2"]
 LABEL_DICT = {name: idx for idx, name in enumerate(CLASS_NAMES)}
 PROB_COLUMNS = [f"prob_{name}" for name in CLASS_NAMES]
+FUSION_RESULT_KEYS = (
+    "fusion_wsi_gate_mean",
+    "fusion_rna_gate_mean",
+    "fusion_gate_std",
+    "fusion_wsi_to_rna_attention",
+    "fusion_rna_to_wsi_attention",
+)
 
 
 def parse_args():
@@ -60,7 +67,7 @@ def parse_args():
     parser.add_argument("--embed_dim", type=int, default=1536)
     parser.add_argument("--model_type", type=str, choices=["clam_sb", "clam_mb"], default="clam_mb")
     parser.add_argument("--model_size", type=str, choices=["small", "big"], default="big")
-    parser.add_argument("--fusion_mode", type=str, choices=["auto", "concat", "gated", "residual"], default="auto")
+    parser.add_argument("--fusion_mode", type=str, choices=["auto", "concat", "gated", "residual", "cross_attention"], default="auto")
     parser.add_argument("--drop_out", type=float, default=0.5)
     parser.add_argument("--B", type=int, default=4)
     parser.add_argument("--tabular_case_id_col", type=str, default="case_id")
@@ -109,6 +116,10 @@ def normalize_checkpoint(checkpoint: dict) -> dict:
 
 def infer_fusion_mode(checkpoint: dict, ckpt_path: Path) -> str:
     has_concat_head = any(key.startswith("fusion_head.") for key in checkpoint)
+    has_cross_attention_head = any(
+        key.startswith(("cross_attention.", "cross_attention_norm."))
+        for key in checkpoint
+    )
     has_gated_head = any(
         key.startswith(("tabular_projection.", "fusion_gate.", "fusion_classifier."))
         for key in checkpoint
@@ -118,6 +129,8 @@ def infer_fusion_mode(checkpoint: dict, ckpt_path: Path) -> str:
         for key in checkpoint
     )
 
+    if has_cross_attention_head:
+        return "cross_attention"
     if has_residual_head and not has_concat_head and not has_gated_head:
         return "residual"
     if has_concat_head and not has_gated_head:
@@ -126,7 +139,7 @@ def infer_fusion_mode(checkpoint: dict, ckpt_path: Path) -> str:
         return "gated"
     raise ValueError(
         f"Could not infer fusion mode from checkpoint keys in {ckpt_path}. "
-        "Pass --fusion_mode concat or --fusion_mode gated explicitly."
+        "Pass --fusion_mode concat, gated, residual or cross_attention explicitly."
     )
 
 
@@ -235,7 +248,7 @@ def compute_metrics(predictions: pd.DataFrame) -> dict:
         ),
         "confusion_matrix": confusion_matrix(labels, preds, labels=list(range(len(CLASS_NAMES)))).tolist(),
     }
-    for key in ("fusion_wsi_gate_mean", "fusion_rna_gate_mean", "fusion_gate_std"):
+    for key in FUSION_RESULT_KEYS:
         if key in predictions.columns:
             values = predictions[key].dropna()
             if not values.empty:
@@ -274,7 +287,7 @@ def evaluate_fold(model, split_dataset, fold: int, split_name: str, device: torc
         }
         for class_idx, class_name in enumerate(CLASS_NAMES):
             row[f"prob_{class_name}"] = float(prob_values[class_idx])
-        for key in ("fusion_wsi_gate_mean", "fusion_rna_gate_mean", "fusion_gate_std"):
+        for key in FUSION_RESULT_KEYS:
             if key in results:
                 value = results[key]
                 if torch.is_tensor(value):
@@ -564,7 +577,7 @@ def log_to_wandb(
     }
     for class_name, value in metrics["class_auc"].items():
         flat_metrics[f"{split_name}_auc/{class_name}"] = value
-    for key in ("fusion_wsi_gate_mean", "fusion_rna_gate_mean", "fusion_gate_std"):
+    for key in FUSION_RESULT_KEYS:
         if key in metrics:
             flat_metrics[f"{split_name}/{key}"] = metrics[key]
 
@@ -634,7 +647,7 @@ def main():
             "macro_f1": fold_metrics["macro_f1"],
             "weighted_f1": fold_metrics["weighted_f1"],
         }
-        for key in ("fusion_wsi_gate_mean", "fusion_rna_gate_mean", "fusion_gate_std"):
+        for key in FUSION_RESULT_KEYS:
             if key in fold_metrics:
                 fold_metric_row[key] = fold_metrics[key]
         fold_metric_rows.append(fold_metric_row)
@@ -685,6 +698,11 @@ def main():
             "fusion_wsi_gate_mean={fusion_wsi_gate_mean:.4f}, "
             "fusion_rna_gate_mean={fusion_rna_gate_mean:.4f}, "
             "fusion_gate_std={fusion_gate_std:.4f}".format(**aggregate_metrics)
+        )
+    if "fusion_wsi_to_rna_attention" in aggregate_metrics:
+        print(
+            "fusion_wsi_to_rna_attention={fusion_wsi_to_rna_attention:.4f}, "
+            "fusion_rna_to_wsi_attention={fusion_rna_to_wsi_attention:.4f}".format(**aggregate_metrics)
         )
     print(f"Saved evaluation outputs to: {output_dir}")
 
