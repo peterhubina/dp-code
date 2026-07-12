@@ -12,6 +12,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Claude Code in the container
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && echo 'export PATH="$HOME/.local/bin:$PATH"' >> /root/.bashrc
+ENV PATH="/root/.local/bin:${PATH}"
+
 # Install required packages
 WORKDIR /setup
 COPY requirements.txt requirements.txt
