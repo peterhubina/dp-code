@@ -1,193 +1,143 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) working in this repository.
 
 ## Project Overview
 
-This is a digital pathology machine learning pipeline for breast cancer recurrence prediction using multimodal data. The project integrates:
-- Whole-slide images (WSI) in .mrxs format
-- Hyperspectral imaging (HSI) data in ENVI format (.hdr/.dat files)
-- Clinical and demographic data
+Computational-pathology ML pipeline centered on **TCGA-BRCA**. The active work is:
+- **PAM50 molecular-subtype classification** (4-class) from whole-slide images, using
+  UNI2-h patch features fed to CLAM multiple-instance learning (MIL).
+- **Multimodal fusion**: WSI (CLAM) + RNA-seq MLP, with a gated fusion head.
+- **Overall-survival prediction** with an attention-MIL (AMIL) discrete-time model.
+- A **CTC cohort** thread (internal name `nou`) reusing the same patch → feature → MIL flow.
 
-The dataset contains 47 WSI, 677 HS images, and clinical data from 47 BC patients (22 experienced distant recurrence over 12-year follow-up).
+A separate, older thread uses the **HistologyHSI-BC-Recurrence** dataset (47 WSI `.mrxs`,
+677 hyperspectral ENVI images, clinical data) for distant-recurrence prediction. It still
+lives in the repo (`tools/hsi_bc/`, `.datasets/HistologyHSI-BC-Recurrence/`,
+`.scratch/hsi_bc_recurrence/`) but is not the primary pipeline.
 
-## Architecture
-
-### Configuration System (Hydra)
-
-The project uses **Hydra** for hierarchical configuration management:
-- Main config: `tools/config/default.yaml`
-- Config groups organized in subdirectories:
-  - `dataset/`: Dataset configurations (e.g., `prostate.yaml`)
-  - `model/`: Model architectures (e.g., `timm.yaml`)
-  - `augmentation/`: Data augmentation pipelines (e.g., `basic.yaml`)
-- Logs and outputs are written to `.scratch/logs/${exp.name}/${exp.ver}/`
-- Use `hydra.main` decorator with `config_path="config"` and `config_name="default"`
-
-### Project Structure
+## Layout
 
 ```
 project/
-├── base/           # Core framework components (legacy MNIST example code)
-│   ├── experiment.py   # Experiment class managing training lifecycle
-│   ├── trainer.py      # Training loop implementation with GPU support
-│   ├── datamodule.py   # DataLoader setup (legacy MNIST example)
-│   ├── model.py        # Simple MLP model (legacy example)
-│   ├── logging.py      # Logging system (CSVLog, ReportCompiler, ModelCheckpointer)
-│   └── utils.py        # Statistics tracking utilities
-├── data/           # Data-related modules (new pathology pipeline)
-│   └── transforms.py   # Custom transforms (placeholder)
-└── loggers/        # Logging utilities (new pathology pipeline)
-    └── checkpointer.py # Model checkpointing (placeholder)
+├── data/            # Active data pipeline (patching + feature datamodules)
+│   ├── patch_extractor.py, geometry_utils.py, patch_dataset.py
+│   ├── feature_datamodule.py, transforms.py
+│   └── run_patching.sh, pam50.R
+├── survival/        # AMIL survival package (dataset, model, trainer, losses, splits, evaluate)
+├── loggers/         # checkpointer.py
+├── CLAM/            # Vendored CLAM (git-tracked copy, own main.py — see below)
+├── MCAT/            # Vendored MCAT (multimodal survival transformer, own main.py)
+├── UNI/             # Vendored UNI feature extractor (NOT git-tracked; must be present locally)
+└── base/            # Legacy MNIST scaffold — see "Legacy" section
 
 tools/
-├── config/         # Hydra configuration files
-├── preprocessing/  # Jupyter notebooks for data preprocessing
-│   ├── main.ipynb                  # Load WSI/HS data
-│   └── overlay_tissue_areas.ipynb  # Overlay tissue compartments
-├── train.py        # Training script (uses project.experiment.Experiment)
-├── eval.py         # Evaluation script (placeholder)
-└── infer.py        # Inference script (placeholder)
+├── extract_features.py         # UNI2-h → .pt feature cache (1536-dim)
+├── create_clam_dataset_csv.py  # Build CLAM dataset_csv manifests
+├── fetch_pam50_labels.py, fetch_tcga_labels.py, download_embeddings.py
+├── train_pam50_final.sh, train_pam50_tabular.sh, train_pam50_multimodal.sh
+├── evaluate_pam50_multimodal.sh, evaluate_pam50.ipynb, evaluate_external.ipynb
+├── train_survival.py, eval_survival.py     # Hydra-driven; config in config/survival.yaml
+├── rna/            # RNA-seq download + preprocessing (download-rna.py, prepare-rna-wsi-classification.py, eda.ipynb)
+├── nou/            # CTC cohort pipeline (patch → feature → infer scripts + run_pipeline*.sh)
+├── hsi_bc/         # HistologyHSI-BC recurrence pipeline (prepare_manifest, infer_pam50, run_pipeline.sh)
+├── data/           # Label CSVs (tcga_brca_pam50_labels.csv, tcga_brca_os_labels.csv, tcga_brca_labels.csv)
+├── preprocessing/, visualisation/  # Notebooks
+└── config/         # Hydra configs (only the survival path is live — see "Hydra")
 ```
 
-**Important:** The codebase contains legacy MNIST example code in `project/base/` that demonstrates the framework structure. New pathology-specific implementations should go in `project/data/` and use Hydra configs in `tools/config/`.
+## Entry Points
 
-### Data Pipeline
+### 1. Patch extraction (WSI → tiles)
+`project/data/run_patching.sh` drives `project/data/patch_extractor.py` /
+`patch_dataset.py`. Tiles are written per-slide with a `metadata.csv` index.
 
-1. **WSI Processing:** Uses OpenSlide for reading whole-slide images (.mrxs format)
-2. **HSI Processing:** Uses Spectral Python (SPy) for hyperspectral data (ENVI .hdr/.dat files)
-   - Each HSI sample has: calibrated, raw, darkReference, whiteReference, RGBImage, SyntheticRGBImage
-3. **Annotations:** GeoJSON format for tissue compartment annotations
-4. **Clinical Data:** Integrated with image data for multimodal learning
-
-### Training Framework
-
-The framework follows a structured experiment pattern:
-
-1. **Experiment** (`project/base/experiment.py`):
-   - Manages experiment lifecycle
-   - Creates model, datamodule, trainer
-   - Saves config and checkpoints to `.scratch/experiments/${name}/${ver}/`
-   - Supports loading from checkpoints via `Experiment.from_folder()`
-
-2. **Trainer** (`project/base/trainer.py`):
-   - Implements training/validation loops
-   - Auto-detects device (CUDA/CPU)
-   - Uses tqdm for progress bars
-   - Integrates with logging system via `LogCompose`
-
-3. **Logging** (`project/base/logging.py`):
-   - `CSVLog`: Writes metrics to CSV
-   - `ReportCompiler`: Generates PDF reports with matplotlib plots
-   - `ModelCheckpointer`: Saves model and optimizer state
-   - All loggers implement common interface: `on_training_start`, `on_epoch_complete`, `on_training_stop`
-
-### Model Instantiation via Hydra
-
-Models are instantiated using Hydra's `_target_` directive:
-- `_target_: toyproblem.models.simple_timm.SimpleTimm` creates model from config
-- Supports arbitrary model architectures via import path
-- Config parameters passed as kwargs to model constructor
-
-## Common Commands
-
-### Environment Setup
+### 2. Feature extraction (tiles → UNI2-h embeddings)
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Docker build
-cd docker && ./build.sh
-
-# Docker run
-cd docker && ./run.sh
+python tools/extract_features.py \
+    --patch_root .datasets/patches \
+    --output .scratch/datasets/features.pt \
+    --assets_dir .scratch/checkpoints \
+    --batch_size 64 --num_workers 4 --encoder uni2-h
 ```
+Scans slide dirs containing `metadata.csv`, loads UNI2-h (needs `project/UNI` present and
+weights in `--assets_dir`), and writes a `.pt` with `embeddings` `[N, 1536]`, `labels`,
+`slide_ids`, and `label_map`. CLAM also ships its own `extract_features_fp.py`.
 
-### Training
+### 3. CLAM MIL training (subtyping / recurrence)
+Run from inside the vendored repo. Valid `--task` values are defined in
+`project/CLAM/main.py` (`tcga_brca_subtyping`, `tcga_brca_recurrence`, `nou_ctc_*`, …),
+each mapping to a `dataset_csv/*.csv` manifest.
 ```bash
-# Train with default config
-python tools/train.py
-
-# Train with custom experiment name/version
-python tools/train.py --name my_experiment --ver v1
-
-# Train with custom hyperparameters
-python tools/train.py --batch_size 32 --max_epochs 50 --learning_rate 0.001
-
-# Note: Legacy train.py uses argparse. Hydra-based training would use:
-# python tools/train.py exp.name=my_exp exp.ver=v1 common.batch_size=32
+cd project/CLAM
+python create_splits_seq.py --task tcga_brca_subtyping --seed 1 --k 10 --val_frac 0.15 --test_frac 0.0
+python main.py --task tcga_brca_subtyping --model_type clam_sb --exp_code pam50 \
+    --k 10 --lr 2e-4 --drop_out 0.25 --early_stopping --weighted_sample \
+    --bag_loss ce --inst_loss svm --embed_dim 1536 --log_data \
+    --data_root_dir /workspace/dp-code/.datasets/embeddings \
+    --results_dir /workspace/dp-code/.scratch/experiments/clam
 ```
+Convenience wrappers: `tools/train_pam50_final.sh` (WSI-only), `tools/train_pam50_tabular.sh`
+(RNA-only), `tools/train_pam50_multimodal.sh` (WSI CLAM-MB + RNA MLP gated fusion),
+`tools/evaluate_pam50_multimodal.sh`.
 
-### Testing Hydra Configuration
+### 4. Survival (AMIL, Hydra)
 ```bash
-# Print resolved config
-python tools/main.py
-
-# Override config groups
-python tools/main.py dataset=prostate model=timm
-
-# Override specific parameters
-python tools/main.py common.batch_size=32 common.learning_rate=0.0001
+python tools/train_survival.py                       # 5-fold CV, mean±std c-index, W&B
+python tools/train_survival.py exp.name=my_exp exp.ver=v2 training.max_epochs=30
+python tools/train_survival.py wandb.enabled=false
+python tools/eval_survival.py --exp_dir .scratch/experiments/amil_surv_baseline/v1
 ```
+Implemented in `project/survival/` (`SurvivalExperiment`, `AMIL_Surv`, `nll_surv` loss,
+stratified k-fold splits). MCAT (`project/MCAT/main.py`) is a separate vendored multimodal
+survival model.
 
-### Data Preprocessing
+## Hydra
+
+Only the **survival** config path is live and importable:
+- `tools/config/survival.yaml` → `dataset: tcga_brca_survival`, `model: amil_surv`
+  (`_target_: project.survival.model.AMIL_Surv`).
+- `hydra.run.dir = .scratch/logs/${exp.name}/${exp.ver}`.
+- Override with dot notation: `training.learning_rate=0.001 exp.ver=v2`.
+
+`tools/main.py` just prints the resolved `default.yaml`. Do **not** rely on `default.yaml`
+or its `dataset: prostate` / `model: timm` / `augmentation: basic` groups — their `_target_`s
+point at a `toyproblem.*` module that does not exist in this repo.
+
+## Data & Output Locations
+
+- `.datasets/tcga-brca/` — TCGA-BRCA WSIs, patches, and `embeddings/`
+- `.datasets/HistologyHSI-BC-Recurrence/` — HSI recurrence raw data
+- `.datasets/nou/` — CTC cohort data
+- `tools/data/*.csv` — TCGA-BRCA label tables (PAM50, OS, clinical)
+- `.scratch/experiments/`, `.scratch/results/` — training runs and checkpoints
+- `.scratch/splits/`, `.scratch/checkpoints/`, `.scratch/logs/`, `.scratch/TCGA-BRCA-rna/`
+
+## Conventions
+
+- **Patient/slide-level splitting**: keep all patches from a slide in the same fold to avoid
+  spatial leakage. CLAM handles this via its split CSVs; custom scripts replicate it.
+- **UNI2-h embeddings are 1536-dim** — pass `--embed_dim 1536` / `input_dim: 1536`.
+- **PAM50 subtyping is 4-class**; survival uses `n_bins: 4` discrete time bins.
+- **Vendored repos** (`CLAM`, `MCAT`, `UNI`) keep their own entry points, requirements, and
+  conventions. Run CLAM/MCAT commands from inside their directories. `CLAM` and `MCAT` are
+  committed into this repo; `UNI` is not tracked and must exist locally for feature extraction.
+- W&B tracking is on by default for survival (`wandb.enabled`, project `dp-survival`) and for
+  the PAM50 shell scripts; disable per-run when experimenting.
+
+## Legacy
+
+`project/base/` (MNIST-style `Experiment`/`Trainer`/`datamodule`/`model`) plus
+`tools/train.py`, `tools/main.py`, and the `prostate`/`timm`/`basic` Hydra groups are
+scaffold from an earlier template. `tools/train.py` is currently broken — it imports
+`project.experiment.Experiment` and the config targets `project.trainer.Trainer`, neither of
+which exists (the classes live under `project/base/`). Don't build on this path; use the
+entry points above.
+
+## Environment
+
 ```bash
-# Launch Jupyter for preprocessing notebooks
-jupyter notebook tools/preprocessing/
+pip install -r requirements.txt      # includes torch, timm, openslide, spectral, hydra-core, wandb
+cd docker && ./build.sh && ./run.sh  # containerized alternative
 ```
-
-## Key Dependencies
-
-- **PyTorch**: Deep learning framework with Lightning integration
-- **OpenSlide**: WSI reading library (requires openslide-bin)
-- **Spectral Python (SPy)**: Hyperspectral image processing
-- **Hydra**: Configuration management (v1.3.2)
-- **WandB**: Experiment tracking (optional)
-- **torchvision**: Standard computer vision transforms and datasets
-- **timm**: PyTorch Image Models library for pretrained backbones
-
-## Important Patterns
-
-### Hydra Config Override
-Use dot notation to override nested configs:
-```bash
-python script.py common.batch_size=64 model.backbone_name=resnet50
-```
-
-### Device Management
-The trainer automatically selects GPU if available via `decide_device()` in `project/base/trainer.py`. MPS (Apple Silicon) support is commented out.
-
-### Checkpoint Format
-Checkpoints contain both model and optimizer state:
-```python
-{
-    "model": model.state_dict(),
-    "opt": optimizer.state_dict()
-}
-```
-
-### Dataset Paths
-- Raw data: `.datasets/PKG - HistologyHSI-BC-Recurrence/`
-- Processed data: `.scratch/datasets/`
-- Experiments: `.scratch/experiments/${name}/${ver}/`
-- Hydra logs: `.scratch/logs/${exp.name}/${exp.ver}/`
-
-## Data Format Specifics
-
-### HSI Data Structure
-Each hyperspectral sample contains:
-- `calibrated.hdr/dat`: Calibrated hyperspectral cube
-- `raw.hdr/dat`: Raw measurements
-- `darkReference.hdr/dat`: Dark reference for calibration
-- `whiteReference.hdr/dat`: White reference for calibration
-- `RGBImage.png`: Standard RGB representation
-- `SyntheticRGBImage.png`: RGB synthesized from HS data
-
-### Sample Organization
-```
-.datasets/PKG - HistologyHSI-BC-Recurrence/02_01_HS_Images/
-├── IDC/
-│   ├── HS_VNIR_90_IDC_x10_C01/
-│   ├── HS_VNIR_90_IDC_x10_C02/
-│   └── ...
-```
+CLAM and UNI have their own `requirements.txt` / `env.yml` for their extra deps.
