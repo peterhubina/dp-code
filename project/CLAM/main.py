@@ -150,7 +150,7 @@ parser.add_argument('--model_type', type=str, choices=['clam_sb', 'clam_mb', 'mi
 parser.add_argument('--exp_code', type=str, help='experiment code for saving results')
 parser.add_argument('--weighted_sample', action='store_true', default=False, help='enable weighted sampling')
 parser.add_argument('--model_size', type=str, choices=['small', 'big'], default='small', help='size of model, does not affect mil')
-parser.add_argument('--task', type=str, choices=['task_1_tumor_vs_normal', 'task_2_tumor_subtyping', 'tcga_brca_recurrence', 'tcga_brca_subtyping', 'nou_ctc_ep', 'nou_ctc_emt', 'nou_ctc_any'])
+parser.add_argument('--task', type=str, choices=['task_1_tumor_vs_normal', 'task_2_tumor_subtyping', 'tcga_brca_recurrence', 'tcga_brca_subtyping', 'tcga_brca_er', 'nou_ctc_ep', 'nou_ctc_emt', 'nou_ctc_any'])
 ### Multimodal fusion options
 parser.add_argument('--fusion_mode', type=str, choices=['concat', 'gated', 'residual', 'cross_attention'], default=None,
                     help='enable WSI + tabular multimodal fusion; supports concat, gated, residual and cross_attention')
@@ -325,6 +325,18 @@ elif args.task == 'tcga_brca_subtyping':
                             label_dict = {'LumA': 0, 'LumB': 1, 'Basal': 2, 'Her2': 3},
                             patient_strat = True,
                             ignore = ['Normal'])
+    dataset.load_from_h5(True)
+
+elif args.task == 'tcga_brca_er':
+    args.n_classes = 2
+    dataset = build_mil_dataset(csv_path = 'dataset_csv/tcga_brca_er.csv',
+                            data_dir= args.data_root_dir,
+                            shuffle = False,
+                            seed = args.seed,
+                            print_info = True,
+                            label_dict = {'ER-negative': 0, 'ER-positive': 1},
+                            patient_strat = True,
+                            ignore = [])
     dataset.load_from_h5(True)
 
 elif args.task == 'nou_ctc_ep':

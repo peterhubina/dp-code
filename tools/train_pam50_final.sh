@@ -12,7 +12,7 @@ cd project/CLAM
 
 python main.py \
     --task          tcga_brca_subtyping \
-    --data_root_dir ../../.datasets/embeddings \
+    --data_root_dir ../../.datasets/tcga-brca/embeddings \
     --embed_dim     1536 \
     --subtyping \
     --exp_code      pam50_final \
