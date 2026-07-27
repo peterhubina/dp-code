@@ -74,3 +74,11 @@ wandb
 analysis
 .agents
 .openclaw
+
+# -----------------------------------------------------------------------------
+#   Vendored / external repos kept locally but not tracked here
+#   (UNI: local feature extractor; Selective-Multimodal: reference-only clone
+#    of Hezil et al. 2025, has its own .git — see memory note)
+# -----------------------------------------------------------------------------
+project/UNI/
+project/Selective-Multimodal-Deep-Learning-for-Breast-Cancer-Subtype-Classification/
