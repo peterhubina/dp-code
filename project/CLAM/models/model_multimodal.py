@@ -9,6 +9,8 @@ import torch.nn.functional as F
 from models.model_clam import CLAM_MB, CLAM_SB
 from models.model_rna import RNA_MLP
 
+FUSION_MODES = ("concat", "gated", "residual", "cross_attention", "film_attention", "coattn")
+
 
 class TabularMLPEncoder(nn.Module):
     """Small MLP encoder for patient-level RNA/tabular features."""
@@ -67,14 +69,21 @@ class CLAMRNAFusion(nn.Module):
         rna_hidden_dims=(1024, 512),
         rna_dropout: float = 0.4,
         residual_scale: float = 0.2,
+        film_rank: int = 32,
+        modality_dropout: float = 0.0,
+        tabular_group_indices=None,
     ):
         super().__init__()
         if tabular_input_dim is None:
             raise ValueError("tabular_input_dim is required for multimodal fusion.")
-        if fusion_mode not in {"concat", "gated", "residual", "cross_attention"}:
-            raise ValueError("fusion_mode must be 'concat', 'gated', 'residual', or 'cross_attention'.")
-        if fusion_mode in {"gated", "residual", "cross_attention"} and fusion_hidden_dim <= 0:
+        if fusion_mode not in FUSION_MODES:
+            raise ValueError(f"fusion_mode must be one of {sorted(FUSION_MODES)}.")
+        if fusion_mode in {"gated", "residual", "cross_attention", "coattn"} and fusion_hidden_dim <= 0:
             raise ValueError(f"fusion_hidden_dim must be positive for {fusion_mode} fusion.")
+        if not 0.0 <= modality_dropout < 1.0:
+            raise ValueError("modality_dropout must lie in [0, 1).")
+        if fusion_mode == "coattn" and not tabular_group_indices:
+            raise ValueError("fusion_mode 'coattn' requires tabular_group_indices.")
 
         if instance_loss_fn is None:
             instance_loss_fn = nn.CrossEntropyLoss()
@@ -105,6 +114,10 @@ class CLAMRNAFusion(nn.Module):
         self.wsi_feature_dim = self.wsi.size_dict[size_arg][1]
         self.rna_model = None
         self.tabular_encoder = None
+        self.film_rank = int(film_rank)
+        self.modality_dropout = float(modality_dropout)
+        # Evaluation switch: when True the tabular modality is treated as missing.
+        self.force_tabular_absent = False
 
         if fusion_mode == "residual":
             rna_hidden_dims = _parse_hidden_dims(rna_hidden_dims)
@@ -184,6 +197,47 @@ class CLAMRNAFusion(nn.Module):
             self.tabular_projection.apply(_initialize_weights)
             self.cross_attention_norm.apply(_initialize_weights)
             self.fusion_classifier.apply(_initialize_weights)
+        elif fusion_mode == "film_attention":
+            # The tabular modality predicts an affine transform of the attention network's
+            # INPUT, re-ranking patches. Pooling still uses the unmodulated patch embeddings
+            # and the frozen CLAM classifier, so at initialisation the logits are exactly the
+            # WSI-alone logits (film factors and the tabular head are both zero-initialised).
+            if self.film_rank > 0:
+                self.film_bottleneck = nn.Linear(self.tabular_encoder.output_dim, self.film_rank, bias=False)
+                self.film_gamma = nn.Linear(self.film_rank, self.wsi_feature_dim)
+                self.film_beta = nn.Linear(self.film_rank, self.wsi_feature_dim)
+                nn.init.xavier_normal_(self.film_bottleneck.weight)
+                for layer in (self.film_gamma, self.film_beta):
+                    nn.init.zeros_(layer.weight)
+                    nn.init.zeros_(layer.bias)
+            self.tabular_head = nn.Linear(self.tabular_encoder.output_dim, n_classes)
+            nn.init.zeros_(self.tabular_head.weight)
+            nn.init.zeros_(self.tabular_head.bias)
+            if self.modality_dropout > 0.0:
+                self.tabular_absent_embedding = nn.Parameter(torch.zeros(self.tabular_encoder.output_dim))
+        elif fusion_mode == "coattn":
+            # Adapted MCAT-style co-attention: tabular tokens query the patch tokens.
+            # Not a reproduction of MCAT -- same folds, frozen branch, loss and encoder as the
+            # other arms, so that only the fusion operator differs.
+            self.tabular_group_indices = [list(map(int, group)) for group in tabular_group_indices]
+            self.tabular_token_encoders = nn.ModuleList(
+                [nn.Linear(len(group), fusion_hidden_dim) for group in self.tabular_group_indices]
+            )
+            self.patch_projection = nn.Linear(self.wsi_feature_dim, fusion_hidden_dim)
+            self.cross_attention = nn.MultiheadAttention(
+                embed_dim=fusion_hidden_dim, num_heads=1, dropout=dropout, batch_first=True
+            )
+            self.coattn_norm = nn.LayerNorm(fusion_hidden_dim)
+            self.image_head = nn.Linear(fusion_hidden_dim, n_classes)
+            self.tabular_head = nn.Linear(self.tabular_encoder.output_dim, n_classes)
+            self.tabular_token_encoders.apply(_initialize_weights)
+            self.patch_projection.apply(_initialize_weights)
+            self.coattn_norm.apply(_initialize_weights)
+            self.image_head.apply(_initialize_weights)
+            nn.init.zeros_(self.tabular_head.weight)
+            nn.init.zeros_(self.tabular_head.bias)
+            if self.modality_dropout > 0.0:
+                self.tabular_absent_embedding = nn.Parameter(torch.zeros(self.tabular_encoder.output_dim))
         else:
             self.wsi_projection = nn.Sequential(
                 nn.Linear(self.wsi_feature_dim, fusion_hidden_dim),
@@ -270,6 +324,9 @@ class CLAMRNAFusion(nn.Module):
         if attention_only:
             return self.wsi(wsi_features, attention_only=True)
 
+        if self.fusion_mode in {"film_attention", "coattn"}:
+            return self._attention_level_fusion(wsi_features, tabular_features, return_features)
+
         if self.wsi_frozen:
             with torch.no_grad():
                 _, _, _, attention, wsi_results = self.wsi(wsi_features, return_features=True)
@@ -327,6 +384,113 @@ class CLAMRNAFusion(nn.Module):
             if self.fusion_mode == "cross_attention":
                 results["fusion_attention"] = fusion_attention
         return logits, y_prob, y_hat, attention, results
+
+    def _encode_tabular(self, tabular_features: torch.Tensor) -> tuple[torch.Tensor, bool]:
+        """Encode the tabular vector, honouring modality dropout and the eval-time absent switch."""
+        encoded = self.tabular_encoder(tabular_features)
+        absent = bool(self.force_tabular_absent)
+        if self.training and self.modality_dropout > 0.0:
+            absent = absent or bool(torch.rand((), device=encoded.device) < self.modality_dropout)
+        if absent:
+            if hasattr(self, "tabular_absent_embedding"):
+                encoded = self.tabular_absent_embedding.unsqueeze(0).expand_as(encoded)
+            else:
+                encoded = torch.zeros_like(encoded)
+        return encoded, absent
+
+    def _frozen_class_logits(self, pooled_per_class: torch.Tensor) -> torch.Tensor:
+        """Apply the WSI branch's own classifier, so FiLM at identity reproduces its logits."""
+        if self.wsi_model_type == "clam_mb":
+            per_class = [self.wsi.classifiers[c](pooled_per_class[c]).squeeze() for c in range(self.n_classes)]
+            return torch.stack(per_class).unsqueeze(0)
+        return self.wsi.classifiers(pooled_per_class.mean(dim=0, keepdim=True))
+
+    def _attention_level_fusion(self, wsi_features, tabular_features, return_features):
+        if wsi_features.dim() == 3 and wsi_features.size(0) == 1:
+            wsi_features = wsi_features.squeeze(0)
+        if tabular_features.dim() == 1:
+            tabular_features = tabular_features.unsqueeze(0)
+
+        feature_extractor = self.wsi.attention_net[:3]
+        attention_head = self.wsi.attention_net[3]
+        if self.wsi_frozen:
+            with torch.no_grad():
+                patch_embeddings = feature_extractor(wsi_features)
+        else:
+            patch_embeddings = feature_extractor(wsi_features)
+
+        encoded_tabular, tabular_absent = self._encode_tabular(tabular_features)
+
+        if self.fusion_mode == "film_attention":
+            logits, pooled, attention_raw, metrics = self._film_attention_fusion(
+                patch_embeddings, attention_head, encoded_tabular, tabular_absent
+            )
+        else:
+            logits, pooled, attention_raw, metrics = self._coattn_fusion(
+                patch_embeddings, encoded_tabular, tabular_features, tabular_absent
+            )
+
+        y_hat = torch.topk(logits, 1, dim=1)[1]
+        y_prob = F.softmax(logits, dim=1)
+        results = dict(metrics)
+        if return_features:
+            results.update(
+                {
+                    "wsi_features": pooled,
+                    "tabular_features": encoded_tabular,
+                    "fusion_features": pooled,
+                }
+            )
+        return logits, y_prob, y_hat, attention_raw, results
+
+    def _film_attention_fusion(self, patch_embeddings, attention_head, encoded_tabular, tabular_absent):
+        metrics = {}
+        if self.film_rank > 0 and not tabular_absent:
+            bottleneck = self.film_bottleneck(encoded_tabular)
+            gamma = 1.0 + self.film_gamma(bottleneck)
+            beta = self.film_beta(bottleneck)
+            modulated = gamma * patch_embeddings + beta
+            metrics = {
+                "fusion_film_gamma_dev": (gamma - 1.0).detach().abs().mean(),
+                "fusion_film_beta_abs": beta.detach().abs().mean(),
+            }
+        else:
+            modulated = patch_embeddings
+
+        attention_logits, _ = attention_head(modulated)
+        attention_raw = torch.transpose(attention_logits, 1, 0)
+        attention = F.softmax(attention_raw, dim=1)
+        # Pool the ORIGINAL patch embeddings: the tabular vector re-ranks patches, it does
+        # not distort the representation being pooled.
+        pooled_per_class = torch.mm(attention, patch_embeddings)
+
+        image_logits = self._frozen_class_logits(pooled_per_class)
+        tabular_logits = self.tabular_head(encoded_tabular)
+        metrics["fusion_tabular_logit_abs"] = tabular_logits.detach().abs().mean()
+        logits = image_logits + tabular_logits
+        return logits, pooled_per_class.mean(dim=0, keepdim=True), attention_raw, metrics
+
+    def _coattn_fusion(self, patch_embeddings, encoded_tabular, tabular_features, tabular_absent):
+        tokens = torch.stack(
+            [
+                encoder(tabular_features[:, group].float())
+                for encoder, group in zip(self.tabular_token_encoders, self.tabular_group_indices)
+            ],
+            dim=1,
+        )
+        if tabular_absent:
+            tokens = torch.zeros_like(tokens)
+
+        patch_tokens = self.patch_projection(patch_embeddings).unsqueeze(0)
+        attended, attention_weights = self.cross_attention(
+            tokens, patch_tokens, patch_tokens, need_weights=True
+        )
+        attended = self.coattn_norm(attended + tokens)
+        pooled = attended.mean(dim=1)
+
+        logits = self.image_head(pooled) + self.tabular_head(encoded_tabular)
+        metrics = {"fusion_coattn_max_weight": attention_weights.detach().max()}
+        return logits, pooled, attention_weights, metrics
 
     def _residual_fusion(
         self,

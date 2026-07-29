@@ -152,8 +152,18 @@ parser.add_argument('--weighted_sample', action='store_true', default=False, hel
 parser.add_argument('--model_size', type=str, choices=['small', 'big'], default='small', help='size of model, does not affect mil')
 parser.add_argument('--task', type=str, choices=['task_1_tumor_vs_normal', 'task_2_tumor_subtyping', 'tcga_brca_recurrence', 'tcga_brca_subtyping', 'tcga_brca_er', 'nou_ctc_ep', 'nou_ctc_emt', 'nou_ctc_any'])
 ### Multimodal fusion options
-parser.add_argument('--fusion_mode', type=str, choices=['concat', 'gated', 'residual', 'cross_attention'], default=None,
-                    help='enable WSI + tabular multimodal fusion; supports concat, gated, residual and cross_attention')
+parser.add_argument('--fusion_mode', type=str,
+                    choices=['concat', 'gated', 'residual', 'cross_attention', 'film_attention', 'coattn'], default=None,
+                    help='enable WSI + tabular multimodal fusion; supports concat, gated, residual, '
+                         'cross_attention, film_attention and coattn')
+parser.add_argument('--film_rank', type=int, default=32,
+                    help='rank of the FiLM conditioner for --fusion_mode film_attention; 0 disables the '
+                         'attention conditioning, leaving additive-logit fusion')
+parser.add_argument('--modality_dropout', type=float, default=0.0,
+                    help='probability of dropping the tabular modality during training (film_attention/coattn)')
+parser.add_argument('--tabular_group_spec', type=str, default=None,
+                    help='token grouping for --fusion_mode coattn: path to a signature CSV, or "prefix" to '
+                         'group one-hot blocks by column-name prefix')
 parser.add_argument('--tabular_csv', type=str, default=None,
                     help='CSV containing case_id, label and RNA/tabular feature columns')
 parser.add_argument('--tabular_case_id_col', type=str, default='case_id',
@@ -210,6 +220,16 @@ if args.fusion_mode is not None:
         parser.error('--freeze_wsi_branch requires --pretrained_wsi_ckpt')
     if args.fusion_mode == 'residual' and args.pretrained_rna_ckpt is None:
         parser.error('--fusion_mode residual requires --pretrained_rna_ckpt')
+    if args.fusion_mode == 'coattn' and args.tabular_group_spec is None:
+        parser.error('--fusion_mode coattn requires --tabular_group_spec')
+    if args.fusion_mode == 'coattn' and args.log_heatmaps:
+        # coattn returns token-to-patch attention (1 x n_tokens x n_patches), not the
+        # per-class patch attention the heatmap logger expects.
+        parser.error('--log_heatmaps is not supported with --fusion_mode coattn')
+    if args.film_rank < 0:
+        parser.error('--film_rank must be >= 0')
+    if not 0.0 <= args.modality_dropout < 1.0:
+        parser.error('--modality_dropout must lie in [0, 1)')
 
 def seed_torch(seed=7):
     import random
@@ -257,7 +277,10 @@ settings = {'num_splits': args.k,
             'freeze_rna_branch': args.freeze_rna_branch,
             'rna_hidden_dims': args.rna_hidden_dims,
             'rna_dropout': args.rna_dropout,
-            'residual_scale': args.residual_scale}
+            'residual_scale': args.residual_scale,
+            'film_rank': args.film_rank,
+            'modality_dropout': args.modality_dropout,
+            'tabular_group_spec': args.tabular_group_spec}
 
 if args.model_type in ['clam_sb', 'clam_mb']:
    settings.update({'bag_weight': args.bag_weight,

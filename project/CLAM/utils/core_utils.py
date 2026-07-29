@@ -27,6 +27,10 @@ FUSION_RESULT_KEYS = (
     'fusion_gate_std',
     'fusion_wsi_to_rna_attention',
     'fusion_rna_to_wsi_attention',
+    'fusion_film_gamma_dev',
+    'fusion_film_beta_abs',
+    'fusion_tabular_logit_abs',
+    'fusion_coattn_max_weight',
 )
 
 
@@ -330,6 +334,17 @@ def train(datasets, cur, args):
         if not hasattr(train_split, 'tabular_feature_dim'):
             raise ValueError("Multimodal fusion requires a multimodal dataset split.")
 
+        tabular_group_indices = None
+        if args.fusion_mode == 'coattn':
+            from utils.tabular_groups import build_tabular_groups
+            selected_names = train_split.tabular_store.transform.selected_feature_names
+            group_names, tabular_group_indices = build_tabular_groups(
+                selected_names, args.tabular_group_spec
+            )
+            print('Co-attention tokens: {}'.format(
+                ', '.join('{}({})'.format(name, len(idx))
+                          for name, idx in zip(group_names, tabular_group_indices))))
+
         model = CLAMRNAFusion(
             wsi_model_type=args.model_type,
             tabular_input_dim=train_split.tabular_feature_dim,
@@ -340,6 +355,9 @@ def train(datasets, cur, args):
             rna_hidden_dims=_parse_hidden_dims(getattr(args, 'rna_hidden_dims', '1024,512')),
             rna_dropout=getattr(args, 'rna_dropout', 0.4),
             residual_scale=getattr(args, 'residual_scale', 0.2),
+            film_rank=getattr(args, 'film_rank', 32),
+            modality_dropout=getattr(args, 'modality_dropout', 0.0),
+            tabular_group_indices=tabular_group_indices,
             k_sample=args.B,
             subtyping=args.subtyping,
             **model_dict,

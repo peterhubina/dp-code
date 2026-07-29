@@ -1,9 +1,13 @@
 # A fusion mechanism for asymmetric second modalities — design document
 
-**Status:** Phase 1 (design only). No model code has been written and no training has been
-launched on the basis of this document. Every number below was computed from a tool result in
-this session or is cited from `docs/er-prediction-results.md`, which was itself independently
-verified; numbers that could not be verified are marked as such.
+**Status:** Phase 2 implemented and independently verified (2026-07-28). Sections 0–6 are the
+design record as approved; **§7 records what was actually built and where it deviates, and §8
+records the independent audit and the two findings that constrain how the co-attention baseline
+may be described.** The mechanism is implemented and unit-tested (48 checks), a single-fold
+smoke test has run, and the multi-fold ablation is handed off to the author — no multi-fold
+training has been launched from here. Every number below was computed
+from a tool result in this session or is cited from `docs/er-prediction-results.md`, which was
+itself independently verified; numbers that could not be verified are marked as such.
 
 **Purpose.** The preceding chapter established a leakage-controlled ER-status ablation on
 TCGA-BRCA and produced a real result: RNA fusion helps (+0.044 AUROC, DeLong p = 1.6×10⁻⁵),
@@ -52,20 +56,24 @@ the previous chapter is a replication and only the mechanism can be this chapter
 - **Primary — Design C, FiLM-conditioned attention MIL.** The tabular vector predicts a scale and
   shift applied to the input of CLAM's frozen attention-scoring network, re-ranking patches, while
   pooling still uses the original unmodulated patch embeddings. Plus undiluted direct logit paths
-  for both modalities, plus modality dropout. ≈51.5k added parameters. Verified numerically: at
-  identity it reproduces the stock pooled feature to 0.00e+00 (so training provably starts at
-  WSI-alone), and a non-identity γ re-ranks 129 of 137 patches (so it genuinely reorders attention
-  rather than merely sharpening it).
-- **Fallback — Design A, additive logit fusion** (≈2.3k parameters, near-zero implementation
-  risk). Delivers the corrective result without the novelty claim.
+  for both modalities, plus modality dropout. Verified numerically: at identity it reproduces the
+  WSI-alone **logits** to 0.00e+00 (so training provably starts at the image-only model), and a
+  non-identity γ re-ranks 129 of 137 patches (so it genuinely reorders attention rather than
+  merely sharpening it). As built it is **42,754** parameters, not the ≈51.5k estimated here —
+  see §7.2b for measured counts.
+- **Fallback — Design A, additive logit fusion.** Delivers the corrective result without the
+  novelty claim. As built it is **770** parameters and is reachable as `--film_rank 0`, so it is
+  an ablation arm rather than a separate implementation.
 
 **Honest expectation.** Most likely C matches RNA-alone (≈0.951–0.960) and beats the gated arm,
 while clinicopath stays at WSI-alone. The chapter is structured so its value does not depend on
 the headline number moving — the §3 diagnosis stands on its own, and a null on the interaction
 hypothesis will be reported as a null.
 
-**One decision for you (§6.3b):** whether to add MCAT/SurvPath adapted to classification as
-baselines. My recommendation is to defer them to a stated limitation.
+**Decisions taken (2026-07-28).** Implement the FiLM design, with `film_rank 0` giving the
+additive-logit design as an ablation rather than as a separate implementation. Add an adapted
+MCAT-style co-attention operator as a baseline inside this harness (§6.3b), while declining to
+reproduce MCAT or SurvPath end to end — that stays a stated limitation.
 
 ---
 
@@ -728,9 +736,330 @@ tabular-only and capacity-matched controls — but flag it now rather than disco
 - **Anti-fishing rule:** if more than one variant is ever reported on test, that will be stated
   explicitly and the correction widened accordingly. A null result will be reported as a null.
 
-### 6.5 What is *not* in scope
+### 6.5 What is *not* in scope (as of Phase 1)
 
 No re-extraction of features, no rebuilt splits or tables, no CPTAC or external cohort, no third
 analysis script (`tools/evaluate_er_ablation.py` is extended), no change to the four existing
 fusion modes, and no multi-seed sweep in this chapter (single seed 1 remains a stated limitation
 inherited from the previous chapter).
+
+---
+
+## 7. Implementation as built (Phase 2)
+
+Approved 2026-07-28: primary design = FiLM-conditioned attention MIL; plus an adapted
+co-attention baseline. Recorded here are the points where the built mechanism differs from
+the Phase-1 sketch above, so the design record stays honest.
+
+### 7.1 What was added
+
+Two new `--fusion_mode` values, as a purely additive change to five files:
+`models/model_multimodal.py` (new `FUSION_MODES` tuple, two constructor branches, and a
+separate `_attention_level_fusion` forward path so the four original modes' code is not
+touched), `main.py` (argparse choices plus `--film_rank`, `--modality_dropout`,
+`--tabular_group_spec`, and the settings dict), `utils/core_utils.py` (constructor kwargs,
+token-group construction, four new `FUSION_RESULT_KEYS`), the new
+`utils/tabular_groups.py`, and the new `tests/test_fusion_modes.py`. Outside CLAM, the runner
+`tools/train_er_novel_fusion.sh` holds the exact command set; `RUNNER=echo bash
+tools/train_er_novel_fusion.sh test` prints the resolved commands without executing them.
+
+`main.py` also gained one guard: `--log_heatmaps` is rejected for `coattn`, whose attention
+tensor is token-to-patch (`1 × n_tokens × n_patches`) rather than the per-class patch attention
+the heatmap logger expects. It defaults to off, so this only converts a latent crash into a
+clear error.
+
+### 7.2 Three deviations from the Phase-1 design
+
+1. **The image logits come from the frozen CLAM classifier, not a new head.** The sketch had
+   `logits = W_img·w' + W_tab·c` with a fresh `W_img`. As built, the FiLM-conditioned
+   per-class pooled features are passed through the WSI branch's *own* `classifiers`, so at
+   γ = 1, β = 0 with the zero-initialised tabular head the model reproduces the WSI-alone
+   logits **exactly**. This is stronger than the sketch promised: the do-no-harm property is
+   now an identity, verified at max absolute difference **0.000e+00** for both the 20530-dim
+   and 24-dim inputs. It also means the image pathway adds no new parameters at all.
+2. **No per-case reliability scalar.** Design A was sketched with a learned λ weighting the
+   image logits. It was dropped: §2.1 established that per-case reliability weighting is both
+   published and *weaker* than the repo's existing per-dimension gate, so it would have added
+   a parameter without adding a defensible claim. The `film_rank 0` ablation is therefore
+   plain additive-logit fusion, `logits = wsi_logits + W_tab·c`.
+3. **Modality dropout applies to the tabular modality only.** The sketch dropped either
+   modality. In this setting the whole-slide image is always available and only the
+   transcriptome can be missing (47 of 1003 cases), so image dropout would have regularised
+   against a scenario that never occurs. Evaluation-time missing-modality inference is exposed
+   through the `force_tabular_absent` attribute.
+
+### 7.2b Measured parameter counts (these supersede the §4 estimates)
+
+Trainable parameters with the WSI branch frozen, counting the tabular encoder separately
+because it is identical across arms and dwarfs every fusion mechanism.
+
+| Arm | Total trainable | Tabular encoder | **Fusion mechanism** |
+|---|---:|---:|---:|
+| FiLM + RNA (rank 32) | 2,669,826 | 2,627,072 | **42,754** |
+| FiLM + clinicopath (rank 32) | 115,970 | 73,216 | **42,754** |
+| Additive-logit ablation (rank 0) + RNA | 2,627,842 | 2,627,072 | **770** |
+| `gated` + RNA, dim 32 (published arm) | 2,653,986 | 2,627,072 | 26,914 |
+| `gated` + RNA, dim 64 (capacity control) | 2,684,994 | 2,627,072 | **57,922** |
+| Adapted co-attention + RNA, dim 64 | 3,317,764 | 2,627,072 | **690,692** |
+| Adapted co-attention + clinicopath, dim 64 | 125,380 | 73,216 | 52,164 |
+
+Two things follow. The FiLM mechanism is **42,754** parameters, not the ≈50.7k estimated in §4,
+because the image logits reuse the frozen classifier rather than a new head; the capacity
+control at `fusion_hidden_dim 64` (57,922) therefore still exceeds it by 35%, so the control
+remains conservative. And the additive-logit ablation is **770** parameters — a linear head on
+the tabular code plus the absent embedding — which makes it a remarkably cheap way to test
+whether the entire published gated arm was simply the wrong operator.
+
+### 7.3 A property worth knowing before reading training curves
+
+Because `film_gamma` and `film_beta` are zero-initialised to obtain the identity property,
+`film_bottleneck` receives **exactly zero gradient on the first optimiser step** — the chain
+rule runs through a zero matrix. It becomes active from step 1 once the output layers move off
+zero. This is the ControlNet zero-convolution pattern and is not a bug; it is pinned down in
+both directions by `test_film_bottleneck_activates_after_first_step`. Measured on a fixed
+batch: loss 0.873 → 0.003 over four steps, bottleneck gradient 0.0 at step 0 and 1.5e-1 at
+step 1.
+
+### 7.4 Verification performed
+
+`python tests/test_fusion_modes.py` from `project/CLAM`: **46 checks, all passing.** They
+cover output shapes for both a 20530-dim and a 24-dim tabular input on both new modes; the
+FiLM identity property; that `film_rank 0` creates no FiLM parameters and reproduces
+WSI-alone; that a non-identity γ re-ranks patches (137 of 137 rank positions moved); that
+pooling uses the **unmodulated** patch embeddings; gradient flow into every new parameter;
+that `freeze_wsi_branch` leaves all WSI parameters with `requires_grad=False`, gradient-free
+and numerically unchanged after an optimiser step, with an explicit non-vacuity check;
+missing-modality inference; that modality dropout is inactive in eval mode; and a **regression
+test confirming all four original modes — `concat`, `gated`, `cross_attention` and `residual` —
+produce bit-identical logits (max difference 0.000e+00) to the original implementation.** That
+regression test is pinned to commit `60a96391`, the last commit touching
+`model_multimodal.py` before this change, deliberately *not* to `HEAD`: once this work is
+committed, comparing against `HEAD` would compare the file with itself and pass vacuously.
+
+The tests were confirmed to be discriminating by deliberately breaking the mechanism four
+ways and checking each was caught: pooling the modulated embeddings instead of the original
+(2 checks failed), removing the zero-initialisation (3 failed), making `freeze_wsi_branch` a
+no-op (4 failed), and altering the existing `gated` operator (the regression check failed).
+The file was restored and re-verified identical afterwards.
+
+**Smoke tests on real data** (fold 0, 2 epochs, `--freeze_wsi_branch`, not converged and not
+to be read as results): FiLM + clinicopath reached val AUROC 0.892 / test 0.912; FiLM + RNA
+val 0.947 / test 0.949 with the FiLM diagnostics moving off identity (`fusion_film_gamma_dev`
+0.062 → 0.139); adapted co-attention + RNA train loss 0.318 → 0.263, val 0.926 → 0.927.
+
+### 7.5 One measurement that affects how the co-attention baseline is read
+
+With `--tabular_top_n_features 10000`, the variance-based selection retains only **1787** of
+MCAT's curated signature genes, so the token sizes are Tumor Suppressor 23, Oncogenes 159,
+Protein Kinases 269, Cell Differentiation 356, Transcription Factors 677, Cytokines 303, and
+an **unassigned token of 8419** features. ESR1 falls in Transcription Factors, so the baseline
+does have the informative gene. But the unassigned token dominates the parameter count: the
+co-attention arm's mechanism is **690,692** parameters against the FiLM arm's 42,754, a factor
+of 16. That is the conservative direction for a baseline — it is given far more capacity, not
+less — but it must be reported prominently rather than hidden, and it carries a real
+overfitting risk on ~900 training cases per fold. If the co-attention arm underperforms, the
+honest reading is "co-attention with this tokenisation overfits at this cohort size", not
+"co-attention is a worse operator".
+
+---
+
+## 8. Independent verification and its consequences
+
+A fresh-context verifier audited the change with no prior knowledge of it, trusting nothing in
+the description. Full report: `docs/implementation-research/phase2-verification.md`. Its
+evidence is stronger than the author's own tests, so it supersedes them where they overlap.
+
+### 8.1 The three safety claims: all PASS
+
+- **The four original modes are bit-identical.** 32 model pairs (2 backbones x 4 modes x
+  2 dropout settings x frozen/unfrozen), each evaluated in train and eval mode with and
+  without `return_features`, plus `instance_eval=True` and the `attention_only` path —
+  **128 forward comparisons, max absolute difference 0.0**, requiring exact equality rather
+  than `allclose`. State dicts identical in all 32 pairs. Only six lines are deleted across
+  the whole vendored CLAM, all argparse metadata or constructor validation.
+- **The freeze holds.** 16 configurations, including a stricter variant handing *every*
+  parameter (frozen ones included) to Adam with weight decay: 0 WSI parameters with
+  `requires_grad`, 0 receiving gradients, **0 changing value**, with 6-24 non-WSI parameters
+  moving each time so the check is not vacuous.
+- **Splits and the transform are untouched.** Every dataset module, `utils/utils.py`,
+  `create_splits_seq.py` and `evaluate_multimodal.py` are byte-identical to HEAD by md5, and
+  the leakage controls were re-verified *functionally*: the fitted selection and mean/std
+  match a train-only fit exactly (0.0) and differ from an all-rows fit (2.79 in the mean), so
+  the check is not blind; a missing `case_id` raises; and the label-disagreement check raises
+  in the disagreeing case and not in the agreeing one.
+
+### 8.2 Two findings that change how the co-attention arm may be described
+
+These are the important ones. Both were measured, not inferred.
+
+1. **`coattn` does not actually reuse the pretrained WSI branch the way the other arms do.**
+   Perturbing each frozen sub-module and reading the change in logits:
+
+   | perturbed sub-module | `film_attention` change in logits | `coattn` change in logits |
+   |---|---|---|
+   | `attention_net[0]` (patch-encoder trunk) | 2.888 | 1.008 |
+   | `attention_net[3]` (CLAM attention head) | 0.363 | **0.000** |
+   | `classifiers` (CLAM bag classifier) | 4.820 | **0.000** |
+
+   `coattn` uses only the frozen patch-encoder trunk and substitutes its own projection,
+   attention and head for the rest. That is a faithful rendering of the co-attention operator
+   — MCAT replaces the pooling entirely — but it means "all arms share the same frozen WSI
+   branch" is materially weaker for `coattn` than for `film_attention`. **The write-up must
+   say this explicitly rather than implying an equal footing.**
+
+2. **`coattn`'s missing-modality fallback is not the image-only model.** With the tabular
+   modality marked absent, its zeroed query tokens make the attention degenerate to
+   near-uniform mean pooling, landing 2.2218 away from the WSI-alone logits at
+   initialisation, where `film_attention` is exactly 0.0. **The graceful-degradation claim of
+   6.4 therefore applies to the FiLM arm only**; reporting a missing-modality number for
+   both arms side by side would be comparing two different fallbacks.
+
+### 8.3 Other findings, and what was done about them
+
+- **Fixed.** `utils/tabular_groups.py` had an unreachable error branch, so a signature CSV
+  that matched nothing degraded silently into a single giant `unassigned` token — which would
+  train happily and look like a valid baseline while testing nothing. It now raises with a
+  diagnostic. A companion guard rejects `prefix` grouping when it would yield more than 64
+  tokens, which is what happens if it is applied to bare gene symbols. Both are covered by
+  new tests (the suite is now **48 checks**).
+- **Documented, not changed.** The zero-gradient first step (7.3) affects the whole tabular
+  encoder in both new modes, not just the FiLM bottleneck, because `tabular_head` is
+  zero-initialised. It self-resolves at step 1 (0.0 -> 2.5e-3 for FiLM, 8.8e-3 for coattn).
+  Removing it would mean giving up the exact identity property, which is the mechanism's
+  central claim, in exchange for one step out of several hundred. Not worth it.
+- **Open gap.** `evaluate_multimodal.py` cannot construct either new mode — it passes no
+  `film_rank`, `modality_dropout` or `tabular_group_indices`, and its `infer_fusion_mode`
+  does not recognise the new state-dict keys. This does not affect the main ablation, which
+  is computed offline from the per-fold `split_{i}_results.pkl` files, but the
+  missing-modality evaluation needs a forward pass with `force_tabular_absent=True` and
+  therefore needs a path that does not exist yet. To be handled alongside the analysis
+  extension after training.
+- **Pre-existing, unrelated.** `--fusion_mode residual` is only trainable with
+  `--freeze_rna_branch`, because `RNA_MLP` uses `BatchNorm1d` which cannot run in training
+  mode at MIL's batch size of 1. Present at HEAD; worth knowing, but not introduced here.
+
+### 8.4 A caveat about the audit itself
+
+Other sessions were writing to this repository during the audit, and the working tree moved
+underneath it: the `.detach()` calls on the new metrics and the `--log_heatmaps` guard landed
+mid-run. The verifier re-derived every result against final file hashes and re-checked those
+hashes afterwards, so the report certifies specific bytes. The `tabular_groups.py` fix in 8.3
+was made *after* the audit and is covered by the test suite rather than by the audit.
+
+---
+
+## 9. Selection phase outcome (2026-07-28)
+
+The rank sweep of 6.2 has been run. **Only validation AUROC was read**; the analysis selected
+the `val_auc` column explicitly, so no test number from these runs entered the decision. The
+selection runs live in `.scratch/results/er_selection/`, a separate tree from the reportable
+arms, and their test predictions must stay unread.
+
+### 9.1 Result
+
+Mean validation AUROC over the same 10 site-holdout folds:
+
+| film_rank | mean val AUROC | sd | median | mechanism params |
+|---:|---:|---:|---:|---:|
+| 16 | 0.9546 | 0.0122 | 0.9542 | 22,274 |
+| 32 | 0.9572 | 0.0122 | 0.9586 | 42,754 |
+| **64** | **0.9582** | 0.0109 | 0.9619 | 83,714 |
+
+**Selected: `film_rank = 64`**, by the pre-registered rule (highest mean validation AUROC).
+
+Two honest qualifications. Rank 64 beats rank 16 by +0.0036, which is consistent
+(rank 16 better in only 2 of 10 folds; paired t p = 0.032). But rank 64 versus rank 32 is
++0.0010 with a paired t of p = 0.449 and Wilcoxon p = 0.492 — **statistically
+indistinguishable**, with rank 32 better in 4 of 10 folds. The choice between 32 and 64 is
+therefore essentially arbitrary, and nothing in the chapter should be presented as depending on
+it. Following the pre-registered rule is the right move precisely because it removes author
+discretion at the point where the data cannot decide.
+
+### 9.2 Consequence: the capacity control had to move
+
+This is the part that would have been easy to miss. §6.3 specified the capacity control as
+"`gated` at a width whose fusion head exceeds the novel mechanism's", and instantiated it at
+`fusion_hidden_dim 64` (57,922 params) on the assumption of `film_rank 32` (42,754). At the
+selected `film_rank 64` the FiLM mechanism is **83,714** parameters, which *exceeds* the dim-64
+control — inverting the conservatism and handing a reviewer the objection that the novel arm
+won on parameter count.
+
+The control has therefore been re-derived from its own original rule, not re-chosen freely:
+**`gated` at `fusion_hidden_dim 96` = 93,026 params > 83,714**. The runner reflects this
+(`GATED_CAP_DIM=96`, exp codes `er_wsi_rna_gatedcap` / `er_wsi_clinpath_gatedcap`). The
+published dim-32 arm remains the primary comparison; the dim-96 arm exists solely to rule out
+capacity.
+
+### 9.3 The mechanism is learning, which satisfies hypothesis measurement (i)
+
+From the validation-side FiLM diagnostics at the last epoch of each fold:
+
+| film_rank | mean \|γ − 1\| | mean \|β\| | epochs to early stop |
+|---:|---:|---:|---|
+| 16 | 0.494 ± 0.166 | 0.258 ± 0.161 | 7–14 |
+| 32 | 0.808 ± 0.534 | 0.267 ± 0.130 | 7–19 |
+| 64 | 1.196 ± 0.821 | 0.330 ± 0.167 | 8–16 |
+
+The conditioning moves substantially and monotonically away from identity (rank 64, fold 0:
+0.250 → 0.902 across epochs). So measurement (i) of the falsifiable hypothesis in §4 — that the
+learned modulation is non-negligible — **is satisfied**. That is necessary but not sufficient:
+it shows the mechanism is being used, not that using it helps. Measurements (ii) attention
+divergence under permuted RNA and (iii) exceeding the ≈0.9610 late-fusion ceiling remain open
+and are test-set questions. Note also the large fold-to-fold spread at rank 64 (sd 0.82), which
+is the overfitting risk §4 flagged; validation AUROC does not show it biting, but it is worth
+re-checking on the test folds.
+
+---
+
+## 10. Metrics and calibration: what is tracked, and one accepted limitation
+
+Decided 2026-07-29, before the test phase was launched.
+
+### 10.1 Why AUROC stays the primary endpoint
+
+AUROC is rank-based and therefore invariant to any monotone recalibration, temperature scaling
+included. That is the right property for comparing fusion *mechanisms*: if one arm ranks cases
+better but is overconfident, a single temperature parameter repairs the calibration, whereas
+nothing repairs a worse ranking. Promoting calibration to a primary criterion would let an arm
+win or lose on something trivially fixable. Calibration is therefore reported as a descriptor of
+clinical usability, not used as a decision rule.
+
+No calibration term was added to the loss. Binned ECE is not differentiable, and a calibration
+penalty would confound the mechanism comparison — a win could no longer be attributed to fusion
+rather than to regularisation.
+
+### 10.2 Training is already calibration-aware
+
+`EarlyStopping.__call__` sets `score = -val_loss`, so per-fold checkpoint selection is driven by
+validation **cross-entropy**, not AUROC. Cross-entropy is a proper scoring rule, minimised only
+by correctly calibrated probabilities, so the selected checkpoint already balances calibration
+against discrimination. This is a better default than early-stopping on AUROC and belongs in the
+methods text.
+
+### 10.3 Nothing extra needs logging for the results
+
+Every reported metric — AUPRC, F1, balanced accuracy, ECE, calibration curves, per-site
+breakdowns and the DeLong tests — is computed offline from `split_{i}_results.pkl`, which stores
+per-slide `{slide_id, prob, label}` for each test fold. Adding metrics to W&B would change only
+what is visible during training, not what can be concluded afterwards. **Brier score with its
+reliability/resolution/uncertainty decomposition will be added to the offline analysis**, because
+it is a proper scoring rule and separates "ranks better" from "is better calibrated", which
+binned ECE cannot. No re-run is required for that.
+
+### 10.4 Accepted limitation: no validation predictions
+
+`core_utils.train` computes per-slide validation predictions at line 460 and discards them; only
+test predictions are saved. The author decided on 2026-07-29 not to change this before launching,
+to avoid touching independently verified code immediately before a long run. The consequence,
+stated plainly so it is not mistaken for an oversight:
+
+- **Post-hoc temperature scaling cannot be fitted leakage-free for this chapter.** The only
+  correct way is to fit the temperature on validation and apply it to test; without saved
+  validation predictions that is impossible, and fitting on test would invalidate the results.
+- Validation-side calibration cannot be computed retrospectively.
+
+Neither affects the pre-registered analysis: the primary endpoint is AUROC, which is invariant to
+temperature scaling, and test-side calibration (ECE, and now Brier) remains fully recoverable.
+The thesis should carry this forward as "calibrated probability output is deferred", consistent
+with the previous chapter, which already listed temperature scaling as future work. Recovering
+the capability later costs one re-run of the affected arms.

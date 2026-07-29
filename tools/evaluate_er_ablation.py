@@ -47,17 +47,69 @@ import matplotlib.pyplot as plt  # noqa: E402
 # ---- arms ------------------------------------------------------------------ #
 ARMS = {
     "wsi_alone": "er_wsi_alone_s1",
+    # chapter 1 -- the published gated arms
     "wsi_rna": "er_wsi_rna_gated_s1",
     "wsi_clinpath": "er_wsi_clinpath_gated_s1",
+    # chapter 2 -- the novel mechanism, its ablation, and its controls
+    "rna_film": "er_wsi_rna_film_s1",
+    "clinpath_film": "er_wsi_clinpath_film_s1",
+    "rna_delta": "er_wsi_rna_delta_s1",
+    "clinpath_delta": "er_wsi_clinpath_delta_s1",
+    "rna_gatedcap": "er_wsi_rna_gatedcap_s1",
+    "clinpath_gatedcap": "er_wsi_clinpath_gatedcap_s1",
+    "rna_coattn": "er_wsi_rna_coattn_s1",
+    "clinpath_coattn": "er_wsi_clinpath_coattn_s1",
 }
 ARM_LABELS = {
     "wsi_alone": "WSI-alone",
-    "wsi_rna": "WSI + RNA (gated)",
-    "wsi_clinpath": "WSI + clinicopath (gated)",
+    "wsi_rna": "WSI + RNA (gated, dim 32)",
+    "wsi_clinpath": "WSI + clinicopath (gated, dim 32)",
+    "rna_film": "WSI + RNA (FiLM-attention)",
+    "clinpath_film": "WSI + clinicopath (FiLM-attention)",
+    "rna_delta": "WSI + RNA (additive-logit, film_rank 0)",
+    "clinpath_delta": "WSI + clinicopath (additive-logit, film_rank 0)",
+    "rna_gatedcap": "WSI + RNA (gated, dim 96 capacity control)",
+    "clinpath_gatedcap": "WSI + clinicopath (gated, dim 96 capacity control)",
+    "rna_coattn": "WSI + RNA (adapted co-attention)",
+    "clinpath_coattn": "WSI + clinicopath (adapted co-attention)",
 }
-FUSION_ARMS = ["wsi_rna", "wsi_clinpath"]
+FUSION_ARMS = [a for a in ARMS if a != "wsi_alone"]
 BASELINE = "wsi_alone"
 POS_LABEL = 1  # ER-positive
+
+# Tabular-only probes (case level only; produced by tools/diagnostics/tabular_only_probes.py).
+# These are the controls the original ablation lacked: they answer "does fusion beat simply
+# using the table?", which for RNA is the decisive question.
+PROBES = {
+    "rna_probe": ("case_predictions_rna_logreg_l2.csv", "RNA table only (logistic regression)"),
+    "clinpath_probe": ("case_predictions_clinicopath_logreg_l2.csv",
+                       "Clinicopath table only (logistic regression)"),
+}
+
+# ---- pre-registered comparisons -------------------------------------------- #
+# Fixed in docs/implementation-research/novel-fusion-design.md 6.4 BEFORE any test number
+# was read. PRIMARY carries a Holm correction across its two members; everything else is
+# secondary and reported without alpha adjustment, labelled as such.
+PRIMARY_COMPARISONS = [
+    ("rna_film", "wsi_rna"),
+    ("clinpath_film", "wsi_clinpath"),
+]
+SECONDARY_COMPARISONS = [
+    ("rna_film", "wsi_alone"),
+    ("rna_film", "rna_gatedcap"),
+    ("rna_film", "rna_delta"),
+    ("rna_film", "rna_coattn"),
+    ("rna_film", "rna_probe"),
+    ("rna_delta", "wsi_rna"),
+    ("rna_coattn", "wsi_rna"),
+    ("clinpath_film", "wsi_alone"),
+    ("clinpath_film", "clinpath_gatedcap"),
+    ("clinpath_film", "clinpath_delta"),
+    ("clinpath_film", "clinpath_coattn"),
+    ("clinpath_film", "clinpath_probe"),
+    ("clinpath_delta", "wsi_clinpath"),
+    ("clinpath_coattn", "wsi_clinpath"),
+]
 
 N_BOOT = 2000
 BOOT_SEED = 1
@@ -249,7 +301,23 @@ def calibration(y, p, n_bins=10):
 # ---- figures --------------------------------------------------------------- #
 from sklearn.metrics import precision_recall_curve, roc_curve  # noqa: E402
 
-COLORS = {"wsi_alone": "#4C6EF5", "wsi_rna": "#E8590C", "wsi_clinpath": "#2F9E44"}
+_BASE_COLORS = {"wsi_alone": "#4C6EF5", "wsi_rna": "#E8590C", "wsi_clinpath": "#2F9E44"}
+
+
+class _ArmColors(dict):
+    """Stable colours for the three original arms; distinct tab20 colours for the rest."""
+
+    _EXTRA = plt.get_cmap("tab20").colors
+
+    def __missing__(self, arm):
+        order = [a for a in ARMS if a not in _BASE_COLORS] + sorted(PROBES)
+        idx = order.index(arm) if arm in order else len(self)
+        colour = self._EXTRA[idx % len(self._EXTRA)]
+        self[arm] = colour
+        return colour
+
+
+COLORS = _ArmColors(_BASE_COLORS)
 
 
 def fig_roc(data, out, unit="slide"):
@@ -323,6 +391,110 @@ def fig_per_site(site_df, out, unit="slide"):
 
 
 # ---- unit aggregation ------------------------------------------------------ #
+def holm(pvals):
+    """Holm-Bonferroni adjusted p-values, order preserved."""
+    p = np.asarray(pvals, dtype=float)
+    m = len(p)
+    order = np.argsort(p)
+    adj = np.empty(m)
+    running = 0.0
+    for rank, i in enumerate(order):
+        running = max(running, (m - rank) * p[i])
+        adj[i] = min(1.0, running)
+    return adj
+
+
+def brier_decomposition(y, p, n_bins=10):
+    """Murphy decomposition: Brier = reliability - resolution + uncertainty.
+
+    reliability (lower better) is the calibration term; resolution (higher better) is the
+    discrimination term. Reporting both separates "this arm ranks cases better" from
+    "this arm merely reports better-calibrated numbers", which a single ECE cannot.
+    """
+    y = np.asarray(y, dtype=float)
+    p = np.asarray(p, dtype=float)
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    idx = np.clip(np.digitize(p, bins) - 1, 0, n_bins - 1)
+    base = y.mean()
+    reliability = resolution = 0.0
+    for b in range(n_bins):
+        mask = idx == b
+        n_b = int(mask.sum())
+        if not n_b:
+            continue
+        w = n_b / len(y)
+        reliability += w * (p[mask].mean() - y[mask].mean()) ** 2
+        resolution += w * (y[mask].mean() - base) ** 2
+    uncertainty = base * (1.0 - base)
+    return reliability, resolution, uncertainty
+
+
+def load_probe(diag_dir: Path, filename: str) -> pd.DataFrame:
+    """Load a case-level tabular-only probe into the same frame shape as an arm."""
+    path = diag_dir / filename
+    if not path.exists():
+        return None
+    df = pd.read_csv(path)
+    return pd.DataFrame({
+        "key": df["case_id"].astype(str),
+        "case_id": df["case_id"].astype(str),
+        "slide_id": df["case_id"].astype(str),
+        "site": [c.split("-")[1] for c in df["case_id"].astype(str)],
+        "fold": df["fold"].astype(int),
+        "label": df["y"].astype(int),
+        "p_pos": df["p"].astype(float),
+    })
+
+
+def compare_pair(data_u: dict, arm_a: str, arm_b: str) -> dict:
+    """Paired DeLong + bootstrap delta of arm_a against arm_b on their shared keys."""
+    fa = data_u[arm_a].set_index("key")
+    fb = data_u[arm_b].set_index("key")
+    common = fa.index.intersection(fb.index)
+    y = fa.loc[common, "label"].values
+    pa = fa.loc[common, "p_pos"].values
+    pb = fb.loc[common, "p_pos"].values
+    if not np.array_equal(y, fb.loc[common, "label"].values):
+        raise ValueError(f"label mismatch between {arm_a} and {arm_b} on shared keys")
+
+    auc_a, auc_b, z, pval = delong_roc_test(y, pa, pb)
+    # Guard against the argument-order bug that bit this analysis once before: DeLong's
+    # own AUROCs must agree with independently computed ones, or the labels are swapped.
+    for name, got, want in ((arm_a, auc_a, roc_auc_score(y, pa)),
+                            (arm_b, auc_b, roc_auc_score(y, pb))):
+        if abs(got - want) > 1e-6:
+            raise AssertionError(f"DeLong AUROC for {name} ({got:.6f}) != roc_auc_score ({want:.6f})")
+
+    dmean, dlo, dhi = paired_bootstrap_delta(y, pa, pb)
+    return {
+        "arm": arm_a, "reference": arm_b,
+        "label": ARM_LABELS.get(arm_a, arm_a), "reference_label": ARM_LABELS.get(arm_b, arm_b),
+        "n_matched": int(len(common)),
+        "auroc_arm": auc_a, "auroc_reference": auc_b, "delta_auroc": auc_a - auc_b,
+        "delong_z": z, "delong_p": pval,
+        "boot_delta_mean": dmean, "boot_delta_ci_lo": dlo, "boot_delta_ci_hi": dhi,
+    }
+
+
+def run_comparisons(data_u: dict) -> pd.DataFrame:
+    """The pre-registered comparison table, with Holm applied to the primary endpoint."""
+    rows = []
+    for a, b in PRIMARY_COMPARISONS:
+        if a in data_u and b in data_u:
+            rows.append({**compare_pair(data_u, a, b), "tier": "primary"})
+    primary_idx = list(range(len(rows)))
+    for a, b in SECONDARY_COMPARISONS:
+        if a in data_u and b in data_u:
+            rows.append({**compare_pair(data_u, a, b), "tier": "secondary"})
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["delong_p_holm"] = np.nan
+    if primary_idx:
+        df.loc[primary_idx, "delong_p_holm"] = holm(df.loc[primary_idx, "delong_p"].values)
+    return df
+
+
 def aggregate_unit(df: pd.DataFrame, unit: str) -> pd.DataFrame:
     """Return a prediction frame at the requested unit.
 
@@ -410,11 +582,19 @@ def analyze(data_u: dict) -> dict:
     # calibration
     cal_rows = []
     for arm, df in data_u.items():
-        _, _, _, _, ece, brier = calibration(df["label"].values, df["p_pos"].values)
-        cal_rows.append({"arm": arm, "label": ARM_LABELS[arm], "ece": ece, "brier": brier})
+        y, p = df["label"].values, df["p_pos"].values
+        _, _, _, _, ece, brier = calibration(y, p)
+        rel, res_, unc = brier_decomposition(y, p)
+        cal_rows.append({
+            "arm": arm, "label": ARM_LABELS.get(arm, arm), "ece": ece, "brier": brier,
+            "reliability": rel, "resolution": res_, "uncertainty": unc,
+        })
     cal = pd.DataFrame(cal_rows)
 
-    return {"per_fold": per_fold, "pooled": pooled, "paired": paired, "site": site_df, "cal": cal}
+    comparisons = run_comparisons(data_u)
+
+    return {"per_fold": per_fold, "pooled": pooled, "paired": paired, "site": site_df,
+            "cal": cal, "comparisons": comparisons}
 
 
 # ---- main ------------------------------------------------------------------ #
@@ -452,14 +632,25 @@ def main():
 
     units = ["slide", "case"] if args.unit == "both" else [args.unit]
     bundles = {}
+    diag_dir = results_dir / "diagnostics"
     for unit in units:
         data_u = {arm: aggregate_unit(df, unit) for arm, df in data_slide.items()}
+        if unit == "case":
+            # Tabular-only probes exist at case level only; they are comparators, not arms,
+            # so they join data_u after the per-arm metric tables are built from ARMS.
+            for key, (fname, label) in PROBES.items():
+                probe = load_probe(diag_dir, fname)
+                if probe is not None:
+                    data_u[key] = probe
+                    ARM_LABELS.setdefault(key, label)
         res = analyze(data_u)
         res["per_fold"].to_csv(out_dir / f"metrics_per_fold_{unit}.csv", index=False)
         res["pooled"].to_csv(out_dir / f"metrics_pooled_{unit}.csv", index=False)
         res["paired"].to_csv(out_dir / f"paired_tests_{unit}.csv", index=False)
         res["site"].to_csv(out_dir / f"per_site_auroc_{unit}.csv", index=False)
         res["cal"].to_csv(out_dir / f"calibration_{unit}.csv", index=False)
+        if not res["comparisons"].empty:
+            res["comparisons"].to_csv(out_dir / f"comparisons_{unit}.csv", index=False)
         fig_roc(data_u, out_dir / f"fig_roc_{unit}.png", unit)
         fig_pr(data_u, out_dir / f"fig_pr_{unit}.png", unit)
         fig_calibration(data_u, out_dir / f"fig_calibration_{unit}.png", unit)
@@ -473,6 +664,18 @@ def main():
         print(f"Paired vs WSI-alone (matched {UNIT_NOUN[unit]}):")
         print(res["paired"][["label", "n_matched", "delta_auroc", "delong_p",
                              "boot_delta_ci_lo", "boot_delta_ci_hi"]].to_string(index=False))
+        if not res["comparisons"].empty:
+            cmp_df = res["comparisons"]
+            for tier in ("primary", "secondary"):
+                sub = cmp_df[cmp_df["tier"] == tier]
+                if sub.empty:
+                    continue
+                cols = ["label", "reference_label", "n_matched", "auroc_arm", "auroc_reference",
+                        "delta_auroc", "delong_p"]
+                if tier == "primary":
+                    cols.append("delong_p_holm")
+                print(f"\nPre-registered {tier.upper()} comparisons ({unit} level):")
+                print(sub[cols].to_string(index=False))
 
     write_report(out_dir, bundles, units)
     print(f"\nReport written to {out_dir}/report.md")
