@@ -34,14 +34,14 @@ RESULTS_DIR="../../.scratch/results/er"
 # a reportable arm (see the note above select_film_rank).
 SELECT_RESULTS_DIR="../../.scratch/results/er_selection"
 SPLIT_DIR="tcga_brca_er_100"                 # 10 site-holdout folds
-SEED="1"
+SEED="${SEED:-1}"
 K="10"
 WANDB_PROJECT="er-brca-ablation"
 # Selection runs go to their OWN W&B project. CLAM logs mean_test_auc on every summary run
 # (main.py:105), so leaving the sweep in the reportable project would put test AUROC for the
 # discarded configurations right next to the results. Mirrors the on-disk quarantine below.
 SELECT_WANDB_PROJECT="er-brca-selection"
-WSI_CKPT="${RESULTS_DIR}/er_wsi_alone_s1/s_{fold}_checkpoint.pt"
+WSI_CKPT="${RESULTS_DIR}/er_wsi_alone_s${SEED}/s_{fold}_checkpoint.pt"
 RNA_CSV="../../.scratch/TCGA-BRCA-rna/tcga_brca_er_rna_clam.csv.gz"
 CLINPATH_CSV="../../tools/data/tcga_brca_clinicopath_clam.csv"
 SIGNATURES="../MCAT/dataset_csv/signatures.csv"

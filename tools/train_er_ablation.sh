@@ -25,10 +25,18 @@ cd "${REPO_ROOT}/project/CLAM"
 DATA_ROOT="../../.datasets/tcga-brca/embeddings"
 RESULTS_DIR="../../.scratch/results/er"
 SPLIT_DIR="tcga_brca_er_100"                 # 10 site-holdout folds
-SEED="1"
+# Seed is overridable so the multi-seed repeat can reuse this exact command set:
+#   SEED=2 bash tools/train_er_ablation.sh wsi
+# CLAM appends _s<seed> to the run directory (main.py:407), so exp codes are unchanged.
+SEED="${SEED:-1}"
 K="10"
 WANDB_PROJECT="er-brca-ablation"
-WSI_CKPT="${RESULTS_DIR}/er_wsi_alone_s1/s_{fold}_checkpoint.pt"
+WSI_CKPT="${RESULTS_DIR}/er_wsi_alone_s${SEED}/s_{fold}_checkpoint.pt"
+
+# Set RUNNER=echo to PRINT the resolved commands instead of executing them:
+#   RUNNER=echo bash tools/train_er_ablation.sh all
+# Without this hook a dry run silently starts real training.
+RUNNER="${RUNNER:-python}"
 RNA_CSV="../../.scratch/TCGA-BRCA-rna/tcga_brca_er_rna_clam.csv.gz"
 CLINPATH_CSV="../../tools/data/tcga_brca_clinicopath_clam.csv"
 
@@ -53,7 +61,7 @@ common_args() {
 
 train_wsi() {
     echo ">>> Arm 1/3: WSI-alone baseline (clam_mb) -> er_wsi_alone"
-    python main.py $(common_args) \
+    "${RUNNER}" main.py $(common_args) \
         --exp_code er_wsi_alone \
         --B 4 --bag_loss ce --inst_loss svm \
         --wandb_tags er wsi-alone clam_mb
@@ -61,7 +69,7 @@ train_wsi() {
 
 train_rna() {
     echo ">>> Arm 2/3: WSI + RNA gated fusion (frozen WSI) -> er_wsi_rna_gated"
-    python main.py $(common_args) \
+    "${RUNNER}" main.py $(common_args) \
         --exp_code er_wsi_rna_gated \
         --B 4 --bag_loss ce --no_inst_cluster \
         --tabular_csv "${RNA_CSV}" \
@@ -75,7 +83,7 @@ train_rna() {
 
 train_clinpath() {
     echo ">>> Arm 3/3: WSI + clinicopath gated fusion (frozen WSI) -> er_wsi_clinpath_gated"
-    python main.py $(common_args) \
+    "${RUNNER}" main.py $(common_args) \
         --exp_code er_wsi_clinpath_gated \
         --B 4 --bag_loss ce --no_inst_cluster \
         --tabular_csv "${CLINPATH_CSV}" \

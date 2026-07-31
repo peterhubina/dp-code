@@ -45,20 +45,20 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 # ---- arms ------------------------------------------------------------------ #
-ARMS = {
-    "wsi_alone": "er_wsi_alone_s1",
+ARMS = {  # values are base exp codes; "_s<seed>" is appended at load time
+    "wsi_alone": "er_wsi_alone",
     # chapter 1 -- the published gated arms
-    "wsi_rna": "er_wsi_rna_gated_s1",
-    "wsi_clinpath": "er_wsi_clinpath_gated_s1",
+    "wsi_rna": "er_wsi_rna_gated",
+    "wsi_clinpath": "er_wsi_clinpath_gated",
     # chapter 2 -- the novel mechanism, its ablation, and its controls
-    "rna_film": "er_wsi_rna_film_s1",
-    "clinpath_film": "er_wsi_clinpath_film_s1",
-    "rna_delta": "er_wsi_rna_delta_s1",
-    "clinpath_delta": "er_wsi_clinpath_delta_s1",
-    "rna_gatedcap": "er_wsi_rna_gatedcap_s1",
-    "clinpath_gatedcap": "er_wsi_clinpath_gatedcap_s1",
-    "rna_coattn": "er_wsi_rna_coattn_s1",
-    "clinpath_coattn": "er_wsi_clinpath_coattn_s1",
+    "rna_film": "er_wsi_rna_film",
+    "clinpath_film": "er_wsi_clinpath_film",
+    "rna_delta": "er_wsi_rna_delta",
+    "clinpath_delta": "er_wsi_clinpath_delta",
+    "rna_gatedcap": "er_wsi_rna_gatedcap",
+    "clinpath_gatedcap": "er_wsi_clinpath_gatedcap",
+    "rna_coattn": "er_wsi_rna_coattn",
+    "clinpath_coattn": "er_wsi_clinpath_coattn",
 }
 ARM_LABELS = {
     "wsi_alone": "WSI-alone",
@@ -113,6 +113,7 @@ SECONDARY_COMPARISONS = [
 
 N_BOOT = 2000
 BOOT_SEED = 1
+_DO_BOOTSTRAP = True  # disabled for non-primary seeds; see main()
 
 
 # ---- loading --------------------------------------------------------------- #
@@ -172,6 +173,8 @@ def point_metrics(y: np.ndarray, p: np.ndarray) -> dict:
 
 def bootstrap_ci(y: np.ndarray, p: np.ndarray, fn, n_boot: int = N_BOOT, seed: int = BOOT_SEED):
     """Stratified (by label) bootstrap 95% CI for a metric fn(y, p)."""
+    if not _DO_BOOTSTRAP:
+        return (np.nan, np.nan)
     rng = np.random.default_rng(seed)
     pos_idx = np.where(y == 1)[0]
     neg_idx = np.where(y == 0)[0]
@@ -253,6 +256,8 @@ def delong_roc_test(y_true: np.ndarray, p_a: np.ndarray, p_b: np.ndarray):
 
 def paired_bootstrap_delta(y, p_fusion, p_base, n_boot=N_BOOT, seed=BOOT_SEED):
     """Bootstrap 95% CI for AUROC(fusion) - AUROC(base) on paired slides."""
+    if not _DO_BOOTSTRAP:
+        return (np.nan, np.nan, np.nan)
     rng = np.random.default_rng(seed)
     pos_idx = np.where(y == 1)[0]
     neg_idx = np.where(y == 0)[0]
@@ -524,8 +529,10 @@ def aggregate_unit(df: pd.DataFrame, unit: str) -> pd.DataFrame:
 
 
 # ---- per-unit analysis ----------------------------------------------------- #
-def analyze(data_u: dict) -> dict:
+def analyze(data_u: dict, do_bootstrap: bool = True) -> dict:
     """Full metric battery for one unit's per-arm prediction frames."""
+    global _DO_BOOTSTRAP
+    _DO_BOOTSTRAP = do_bootstrap
     per_fold_rows, pooled_rows = [], []
     for arm, df in data_u.items():
         for fold, g in df.groupby("fold"):
@@ -608,6 +615,73 @@ _STALE = [
 UNIT_NOUN = {"slide": "slides", "case": "cases"}
 
 
+def _record_seed_rows(seed, unit, res, arm_rows, cmp_rows):
+    """Collect one seed's point estimates for the across-seed summary."""
+    for _, r in res["pooled"].iterrows():
+        arm_rows.append({"seed": seed, "unit": unit, "arm": r["arm"], "label": r["label"],
+                         "n": r["n"], "auroc": r["auroc"], "auprc": r["auprc"],
+                         "f1_pos": r["f1_pos"]})
+    if not res["comparisons"].empty:
+        for _, r in res["comparisons"].iterrows():
+            cmp_rows.append({"seed": seed, "unit": unit, "tier": r["tier"],
+                             "arm": r["arm"], "reference": r["reference"],
+                             "label": r["label"], "reference_label": r["reference_label"],
+                             "n_matched": r["n_matched"], "auroc_arm": r["auroc_arm"],
+                             "auroc_reference": r["auroc_reference"],
+                             "delta_auroc": r["delta_auroc"], "delong_p": r["delong_p"]})
+
+
+def _multiseed_summary(arm_rows, cmp_rows, out_dir, seeds):
+    """Across-seed summary. The SEED is the unit of replication: deltas are summarised
+    across seeds, never by pooling or averaging predictions (which would make an ensemble)."""
+    arms = pd.DataFrame(arm_rows)
+    cmps = pd.DataFrame(cmp_rows)
+    arms.to_csv(out_dir / "multiseed_arms_per_seed.csv", index=False)
+    if not cmps.empty:
+        cmps.to_csv(out_dir / "multiseed_comparisons_per_seed.csv", index=False)
+
+    arm_sum = (arms.groupby(["unit", "arm", "label"])["auroc"]
+               .agg(n_seeds="count", auroc_mean="mean", auroc_sd="std",
+                    auroc_min="min", auroc_max="max").reset_index())
+    arm_sum.to_csv(out_dir / "multiseed_arms_summary.csv", index=False)
+
+    cmp_sum = pd.DataFrame()
+    if not cmps.empty:
+        def _agg(g):
+            d = g["delta_auroc"].values
+            return pd.Series({
+                "n_seeds": len(d),
+                "delta_mean": d.mean(),
+                "delta_sd": d.std(ddof=1) if len(d) > 1 else np.nan,
+                "delta_min": d.min(), "delta_max": d.max(),
+                # How often the effect points the same way, and how often it is nominally
+                # significant. A conclusion that flips sign across seeds is not a conclusion.
+                "seeds_positive": int((d > 0).sum()),
+                "seeds_p_lt_05": int((g["delong_p"].values < 0.05).sum()),
+                "sign_consistent": bool(np.all(d > 0) or np.all(d < 0)),
+            })
+        cmp_sum = (cmps.groupby(["unit", "tier", "arm", "reference", "label", "reference_label"])
+                   .apply(_agg).reset_index())
+        cmp_sum.to_csv(out_dir / "multiseed_comparisons_summary.csv", index=False)
+
+    print(f"\n{'=' * 70}\nACROSS-SEED SUMMARY (seeds: {', '.join(map(str, seeds))})\n{'=' * 70}")
+    for unit in sorted(arms["unit"].unique()):
+        print(f"\n--- {unit} level: arm AUROC across seeds ---")
+        sub = arm_sum[arm_sum["unit"] == unit][["label", "n_seeds", "auroc_mean", "auroc_sd",
+                                                "auroc_min", "auroc_max"]]
+        print(sub.round(4).to_string(index=False))
+        if not cmp_sum.empty:
+            for tier in ("primary", "secondary"):
+                t = cmp_sum[(cmp_sum["unit"] == unit) & (cmp_sum["tier"] == tier)]
+                if t.empty:
+                    continue
+                print(f"\n--- {unit} level: {tier.upper()} comparisons across seeds ---")
+                print(t[["label", "reference_label", "n_seeds", "delta_mean", "delta_sd",
+                         "seeds_positive", "seeds_p_lt_05", "sign_consistent"]]
+                      .round(4).to_string(index=False))
+    return arm_sum, cmp_sum
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--results_dir", default=".scratch/results/er")
@@ -616,6 +690,11 @@ def main():
     ap.add_argument("--unit", choices=["slide", "case", "both"], default="both",
                     help="prediction unit for metrics (default: both)")
     ap.add_argument("--out_dir", default=None, help="default: <results_dir>/report")
+    ap.add_argument("--seeds", type=int, nargs="+", default=[1],
+                    help="seeds to analyse. The FIRST seed keeps the canonical output paths; "
+                         "with more than one, per-seed summaries are also written. The seed is "
+                         "the unit of replication -- predictions are never averaged across "
+                         "seeds, which would silently turn the arms into an ensemble.")
     args = ap.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -627,13 +706,28 @@ def main():
     ds = pd.read_csv(args.dataset_csv)
     slide2case = dict(zip(ds["slide_id"], ds["case_id"]))
 
-    # pool per-fold predictions per arm (slide-level substrate)
-    data_slide = {arm: load_arm(results_dir, exp, args.k, slide2case) for arm, exp in ARMS.items()}
-
     units = ["slide", "case"] if args.unit == "both" else [args.unit]
     bundles = {}
     diag_dir = results_dir / "diagnostics"
-    for unit in units:
+    seed_arm_rows, seed_cmp_rows = [], []
+
+    for seed_i, seed in enumerate(args.seeds):
+      primary_seed = seed_i == 0
+      data_slide = {}
+      absent = []
+      for arm, exp in ARMS.items():
+          run_dir = results_dir / f"{exp}_s{seed}"
+          if run_dir.is_dir():
+              data_slide[arm] = load_arm(results_dir, f"{exp}_s{seed}", args.k, slide2case)
+          else:
+              absent.append(arm)
+      if absent:
+          print(f"[seed {seed}] no run directory for: {', '.join(absent)} -- skipped")
+      if not data_slide:
+          print(f"[seed {seed}] no arms found; skipping this seed")
+          continue
+
+      for unit in units:
         data_u = {arm: aggregate_unit(df, unit) for arm, df in data_slide.items()}
         if unit == "case":
             # Tabular-only probes exist at case level only; they are comparators, not arms,
@@ -643,7 +737,11 @@ def main():
                 if probe is not None:
                     data_u[key] = probe
                     ARM_LABELS.setdefault(key, label)
-        res = analyze(data_u)
+        res = analyze(data_u, do_bootstrap=primary_seed)
+        if not primary_seed:
+            _record_seed_rows(seed, unit, res, seed_arm_rows, seed_cmp_rows)
+            continue
+        _record_seed_rows(seed, unit, res, seed_arm_rows, seed_cmp_rows)
         res["per_fold"].to_csv(out_dir / f"metrics_per_fold_{unit}.csv", index=False)
         res["pooled"].to_csv(out_dir / f"metrics_pooled_{unit}.csv", index=False)
         res["paired"].to_csv(out_dir / f"paired_tests_{unit}.csv", index=False)
@@ -676,6 +774,9 @@ def main():
                     cols.append("delong_p_holm")
                 print(f"\nPre-registered {tier.upper()} comparisons ({unit} level):")
                 print(sub[cols].to_string(index=False))
+
+    if len(args.seeds) > 1 and seed_arm_rows:
+        _multiseed_summary(seed_arm_rows, seed_cmp_rows, out_dir, args.seeds)
 
     write_report(out_dir, bundles, units)
     print(f"\nReport written to {out_dir}/report.md")
