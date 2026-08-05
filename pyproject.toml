@@ -7,7 +7,10 @@ name = "dp-code"
 version = "0.1.0"
 description = "PAM50 molecular-subtype classification from H&E whole-slide images fused with arm-level copy-number variation (TCGA-BRCA -> CPTAC-BRCA)."
 readme = "README.md"
-requires-python = ">=3.10"
+# Upper bound is not caution, it is a fact about the pins: torch 2.0.1 publishes
+# no cp312 wheel, so `pip install -e .` on 3.12 fails while trying to build torch
+# from source. The lower bound is openslide-python 1.4.3's own floor.
+requires-python = ">=3.10,<3.12"
 authors = [{ name = "peterhubina", email = "peter.hubina1@gmail.com" }]
 keywords = ["computational-pathology", "PAM50", "breast-cancer", "multiple-instance-learning", "CLAM"]
 
@@ -116,9 +119,10 @@ dp-config = "dpcode.cli.config:main"
 # ---------------------------------------------------------------------------
 # `project` and `tools` have no top-level `__init__.py` (PEP-420 namespace
 # packages). Until now the ONLY thing that made `import project.survival` or
-# `import tools.pam50_arms` work was `ENV PYTHONPATH=/workspace/dp-code` in
-# docker/Dockerfile:26 — outside the container every such import failed.
-# Listing them here makes `pip install -e .` do that job instead.
+# `import tools.pam50_arms` work was a single `ENV PYTHONPATH=<the repo root>`
+# line in docker/Dockerfile — outside the container every such import failed.
+# Listing them here makes `pip install -e .` do that job instead, on any machine
+# and from any working directory. The Dockerfile no longer sets PYTHONPATH.
 #
 # They are enumerated explicitly rather than globbed: `include = ["project*"]`
 # with implicit-namespace discovery matches 1822 directories, because every
@@ -163,3 +167,8 @@ dpcode = ["conf/**/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `make smoke` selects the synthetic end-to-end run with `-m smoke`; `make test`
+# runs everything, that one included.
+markers = [
+  "smoke: the synthetic end-to-end run (real CLAM training on generated data, CPU only)",
+]

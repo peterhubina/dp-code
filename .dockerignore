@@ -1,0 +1,58 @@
+# Build context exclusions.
+#
+# WHY THIS FILE IS THE HIGHEST-VALUE LINE IN THE PACKAGING AUDIT
+#
+# `docker/build.sh` runs `docker build -f docker/Dockerfile -t dp-code .` from
+# the repository root, so the build context is the whole tree: 327 GB measured on
+# 2026-08-05 (.datasets 231 GB, .scratch 95 GB, .git 1.4 GB, wandb 77 MB,
+# papers 15 MB). Without this file every one of those bytes is streamed to the
+# daemon before the build starts — to COPY a single 5 KB `requirements.txt`.
+#
+# The Dockerfile deliberately copies dependency manifests and nothing else: the
+# source arrives by bind mount at run time (docker/run.sh), so baking it in would
+# only be shadowed. Keep this list a denylist rather than `*` + un-ignores, so
+# that adding a `COPY` to the Dockerfile does not silently copy nothing.
+
+# --- the four that matter (in size order) ------------------------------------
+.datasets/
+.scratch/
+.git/
+wandb/
+
+# --- other large or machine-local trees --------------------------------------
+papers/
+analysis/
+results/
+downloads/
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Untracked vendored clones. project/UNI is 13 MB and must exist locally; the
+# Hezil reference clone carries its own .git.
+project/UNI/
+project/Selective-Multimodal-Deep-Learning-for-Breast-Cancer-Subtype-Classification/
+
+# --- run artifacts that were committed in the past ---------------------------
+# These ARE tracked (435 MB of RNA-thread checkpoints under
+# project/CLAM/results/, 5 MB under tmp_eval/) and are records of what was run,
+# so they stay in git — but nothing in the image needs them.
+project/CLAM/results/
+project/CLAM/tmp_eval/
+project/CLAM/heatmaps/
+project/CLAM/wandb/
+
+# --- ordinary noise ----------------------------------------------------------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.mypy_cache/
+.venv/
+venv/
+.vscode/
+.claude/
+.agents/
+.openclaw/
+.DS_Store
