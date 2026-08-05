@@ -1,0 +1,44 @@
+# @package analysis
+#
+# Does a learned fusion rule beat the equal-weight mean of the two probability vectors? No.
+#
+# NOTE the directory name. This group's OPTIONS live in `dpcode/conf/analyses/` while the config
+# key they populate is `analysis`, because `.gitignore:74` is a bare `analysis` pattern, which
+# matches a directory of that name at any depth — `dpcode/conf/analysis/` could never have been
+# committed and a fresh clone would have failed to compose. Same trap as the `wandb` group in
+# DESIGN-ADDENDUM A2, same remedy: `.gitignore` is left untouched and the directory is renamed.
+# The `# @package analysis` line MUST stay on line 1 — Hydra only reads the directive from the
+# very first line — and it is what keeps the config key unchanged, so every override is still
+# spelled `analysis.<key>=…`.
+#
+# Runs tools/stack_wsi_cnv.py: five combination rules of increasing freedom, scored by nested CV
+# over CLAM's own fold tags, then refit on all of TCGA and applied to CPTAC untouched. The answer
+# on disk is that no rule beats the mean on AUROC and every learned rule is significantly worse on
+# external balanced accuracy — which rules out *global* reweighting, not input-conditional gating.
+#
+# Defaults are the values behind docs/cnv-wsi-fusion-external-validation.md §7.
+#
+# DESIGN-ADDENDUM A6: `bootstrap_seed: 11` here against `7` in cnv_wsi_fusion.yaml is deliberate.
+# The two scripts are separate analyses and were never run with a shared seed.
+
+action: stack_wsi_cnv
+
+n_boot: 2000
+bootstrap_seed: 11
+
+# The stacker used by the `logreg_prob` and `logreg_logprob` rules. Distinct from the CNV arm's
+# own C=0.1 (tools/pam50_arms.CNV_C): this one sees 8 probability columns, not 39 arms.
+stacker_C: 1.0
+stacker_max_iter: 4000
+
+# Nelder-Mead settings for the `scalar` and `per_class` weight rules. `per_class` converges to a
+# degenerate Her2 weight of 1.0 at the sigmoid boundary, so these tolerances decide where that
+# boundary sits and are part of the reported result rather than incidental.
+nm_xatol: 1.0e-4
+nm_fatol: 1.0e-6
+nm_maxiter: 2000
+
+# Probability floor for the log-loss and for the log-probability features.
+clip_floor: 1.0e-9
+
+class_order: [Basal, Her2, LumA, LumB]

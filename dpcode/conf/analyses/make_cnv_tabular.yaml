@@ -1,0 +1,40 @@
+# @package analysis
+#
+# Reshape the arm-level CNV matrices into CLAM's `--tabular_csv` contract.
+#
+# NOTE the directory name. This group's OPTIONS live in `dpcode/conf/analyses/` while the config
+# key they populate is `analysis`, because `.gitignore:74` is a bare `analysis` pattern, which
+# matches a directory of that name at any depth — `dpcode/conf/analysis/` could never have been
+# committed and a fresh clone would have failed to compose. Same trap as the `wandb` group in
+# DESIGN-ADDENDUM A2, same remedy: `.gitignore` is left untouched and the directory is renamed.
+# The `# @package analysis` line MUST stay on line 1 — Hydra only reads the directive from the
+# very first line — and it is what keeps the config key unchanged, so every override is still
+# spelled `analysis.<key>=…`.
+#
+# Runs tools/make_cnv_tabular.py. Writes TCGA_BRCA_CNV_arm_4class_clam.csv,
+# CPTAC_BRCA_CNV_arm_4class_clam.csv and chromosome_groups.csv (22 chromosome tokens over the 39
+# arms — the grouping `--fusion_mode coattn` needs; `--tabular_group_spec prefix` would give 39
+# biologically empty singleton tokens).
+#
+# It EXITS NON-ZERO if any case in the existing splits lacks copy number, and that check is
+# load-bearing: multimodal_dataset.py raises on a training case with no tabular row, and complete
+# coverage (910/910 non-Normal) is what lets the fusion ladder reuse
+# splits/tcga_brca_subtyping_100 and treat pam50_final_s1 as a directly comparable WSI-only
+# baseline instead of retraining it.
+
+action: make_cnv_tabular
+
+# DESIGN-ADDENDUM A12. `both` is the historical behaviour and stays the default. `tcga` exists
+# because the CPTAC table sits behind the entire gated CPTAC acquisition chain while the TCGA one
+# needs only .datasets/cnv/ and two tracked CSVs — reading the CPTAC manifest unconditionally used
+# to block anyone reproducing the internal half of the thesis before finishing the external half.
+cohort: both          # tcga | cptac | both
+
+# null means paths.cnv_tabular_dir (.scratch/cnv-tabular). Point it elsewhere to inspect the
+# output without touching the tables the ladder runs were trained against.
+out: null
+
+# CLAM's label_dict order from project/CLAM/main.py — NOT the sorted order the analysis scripts
+# use. The tabular tables carry CLAM's integer labels, so this order is what makes them line up.
+# dp-analysis aborts if tools/make_cnv_tabular.CLASSES disagrees.
+clam_class_order: [LumA, LumB, Basal, Her2]

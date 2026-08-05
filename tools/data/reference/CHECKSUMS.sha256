@@ -1,0 +1,15 @@
+# SHA256 of the tracked reference inputs in this directory.
+#
+# Verify:  sha256sum -c --ignore-missing tools/data/reference/CHECKSUMS.sha256
+#
+# gene_arm_hg38.csv is the Hugo-symbol -> chromosome-arm map (28,163 genes) that turns gene-level
+# log2 copy number into the 39 arm-level features every CNV number in
+# docs/cnv-wsi-fusion-external-validation.md rests on. It was derived by
+# tools/download_cnv_mutations.py from UCSC hg38 refGene + cytoBand, and NEITHER source is
+# pinned: refGene is a live table and RefSeq annotation changes over time. Regenerating the map
+# from UCSC on a later date can therefore move gene->arm assignments, which moves every arm
+# median, which moves every AUROC. This file is the pin. Do not regenerate it to "refresh" it.
+#
+# tools/download_cnv_mutations.py verifies the cached copy under .datasets/cnv/reference/ against
+# this digest on every run and warns loudly on a mismatch.
+8998f1b1c07d4c2c73dc0e701400c4b6c69e6f0bfbe3c38b2edf53088c687d87  gene_arm_hg38.csv

@@ -1,0 +1,40 @@
+# @package analysis
+#
+# External validation of WSI + arm-level CNV fusion, TCGA -> CPTAC (the headline table).
+#
+# NOTE the directory name. This group's OPTIONS live in `dpcode/conf/analyses/` while the config
+# key they populate is `analysis`, because `.gitignore:74` is a bare `analysis` pattern, which
+# matches a directory of that name at any depth — `dpcode/conf/analysis/` could never have been
+# committed and a fresh clone would have failed to compose. Same trap as the `wandb` group in
+# DESIGN-ADDENDUM A2, same remedy: `.gitignore` is left untouched and the directory is renamed.
+# The `# @package analysis` line MUST stay on line 1 — Hydra only reads the directive from the
+# very first line — and it is what keeps the config key unchanged, so every override is still
+# spelled `analysis.<key>=…`.
+#
+# Runs tools/evaluate_cnv_wsi_fusion.py. Reads CLAM probabilities and two arm CSVs already on
+# disk, touches no slide, writes nothing outside its run directory.
+#
+# DESIGN-ADDENDUM A6: these constants are per-script and are NOT shared with stack_wsi_cnv.yaml.
+# The two scripts report different tables and were run with different bootstrap seeds; unifying
+# them behind one value would change published confidence intervals.
+#
+# Every default below is the value behind docs/cnv-wsi-fusion-external-validation.md §1-§5.
+
+action: cnv_wsi_fusion
+
+# Also run the TCGA-only head-to-head (§5). Off by default, matching the bare
+# `python tools/evaluate_cnv_wsi_fusion.py`.
+internal: false
+
+# Paired-bootstrap resamples and their RNG seed. Every 95% CI in §1 and §3 is a function of both.
+n_boot: 4000
+bootstrap_seed: 7
+
+# StratifiedKFold for the internal CNV arm, i.e. the `CNV (39 arms)` row of §5.
+cv_folds: 10
+cv_seed: 0
+
+# Recorded, not settable: tools/pam50_arms.CLASSES. Every probability matrix in this thread is in
+# this column order, and dp-analysis aborts if the module disagrees. CLAM's own label_dict order
+# is different — see make_cnv_tabular.yaml — and pam50_arms.clam_column_order() is the one bridge.
+class_order: [Basal, Her2, LumA, LumB]

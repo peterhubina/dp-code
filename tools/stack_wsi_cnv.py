@@ -52,13 +52,43 @@ import pandas as pd
 from scipy.optimize import minimize
 from sklearn.linear_model import LogisticRegression
 
-from pam50_arms import (CLASSES, balanced_acc, bootstrap_indices, clam_column_order, cnv_arm,
-                        delta_ci, fold_train_cases, load_clam_oof, load_cptac_arms,
-                        load_cptac_wsi_probs, load_tcga_arms, macro_auroc, renormalise)
+# `tools.pam50_arms` rather than a bare `pam50_arms` — see the note in
+# evaluate_cnv_wsi_fusion.py. The direct `python tools/stack_wsi_cnv.py` invocation is unchanged.
+try:
+    from tools.pam50_arms import (CLASSES, balanced_acc, bootstrap_indices, clam_column_order,
+                                  cnv_arm, delta_ci, fold_train_cases, load_clam_oof,
+                                  load_cptac_arms, load_cptac_wsi_probs, load_tcga_arms,
+                                  macro_auroc, renormalise)
+except ModuleNotFoundError as exc:  # pragma: no cover - install error, not a code path
+    raise ModuleNotFoundError(
+        f"{exc}. Run `pip install -e .` from the repository root once; after that this script "
+        "runs from any working directory."
+    ) from exc
+
+# --- Frozen numerical constants ------------------------------------------------------------
+# The values behind §7 of docs/cnv-wsi-fusion-external-validation.md. Named so a test can assert
+# them, not so they can be retuned. Note the bootstrap seed is 11 here and 7 in
+# evaluate_cnv_wsi_fusion.py: the two scripts report different tables and are deliberately not
+# unified behind one seed.
+N_BOOT = 2000
+BOOTSTRAP_SEED = 11
+#: The stacker (`logreg_prob` / `logreg_logprob`). Distinct from the CNV arm's own C=0.1 —
+#: the stacker sees 8 probability columns, not 39 arms.
+STACKER_C = 1.0
+STACKER_MAX_ITER = 4000
+#: Nelder-Mead settings for the `scalar` / `per_class` weight search, and the floor the
+#: log-loss and the log-probability features are clipped at. `per_class` converges to a
+#: boundary solution for Her2, so the tolerances decide where "the boundary" is.
+NM_XATOL = 1e-4
+NM_FATOL = 1e-6
+NM_MAXITER = 2000
+CLIP_FLOOR = 1e-9
 
 
 # ------------------------------------------------------------------ combination rules
-def fit_rule(kind, Pw, Pc, y):
+def fit_rule(kind, Pw, Pc, y, *, stacker_C=STACKER_C, stacker_max_iter=STACKER_MAX_ITER,
+             nm_xatol=NM_XATOL, nm_fatol=NM_FATOL, nm_maxiter=NM_MAXITER,
+             clip_floor=CLIP_FLOOR):
     if kind == "mean":
         return ("mean", None)
     if kind in ("scalar", "per_class"):
@@ -68,37 +98,67 @@ def fit_rule(kind, Pw, Pc, y):
         def loss(w):
             a = 1 / (1 + np.exp(-w))                       # keep weights in (0, 1)
             P = renormalise(a * Pw + (1 - a) * Pc)
-            return -np.mean(np.sum(Y * np.log(np.clip(P, 1e-9, 1)), 1))
+            return -np.mean(np.sum(Y * np.log(np.clip(P, clip_floor, 1)), 1))
 
         best = minimize(loss, np.zeros(n), method="Nelder-Mead",
-                        options={"xatol": 1e-4, "fatol": 1e-6, "maxiter": 2000})
+                        options={"xatol": nm_xatol, "fatol": nm_fatol, "maxiter": nm_maxiter})
         return (kind, 1 / (1 + np.exp(-best.x)))
-    feats = np.hstack([Pw, Pc]) if kind == "logreg_prob" else \
-        np.log(np.clip(np.hstack([Pw, Pc]), 1e-9, 1))
-    lr = LogisticRegression(max_iter=4000, C=1.0).fit(feats, y)
+    feats = _stack_features(kind, Pw, Pc, clip_floor)
+    lr = LogisticRegression(max_iter=stacker_max_iter, C=stacker_C).fit(feats, y)
     assert list(lr.classes_) == list(CLASSES)
     return (kind, lr)
 
 
-def apply_rule(rule, Pw, Pc):
+def _stack_features(kind, Pw, Pc, clip_floor=CLIP_FLOOR):
+    feats = np.hstack([Pw, Pc])
+    return feats if kind == "logreg_prob" else np.log(np.clip(feats, clip_floor, 1))
+
+
+def apply_rule(rule, Pw, Pc, *, clip_floor=CLIP_FLOOR):
     kind, fitted = rule
     if kind == "mean":
         return (Pw + Pc) / 2
     if kind in ("scalar", "per_class"):
         return renormalise(fitted * Pw + (1 - fitted) * Pc)
-    feats = np.hstack([Pw, Pc]) if kind == "logreg_prob" else \
-        np.log(np.clip(np.hstack([Pw, Pc]), 1e-9, 1))
-    return fitted.predict_proba(feats)
+    return fitted.predict_proba(_stack_features(kind, Pw, Pc, clip_floor))
 
 
 RULES = ["mean", "scalar", "per_class", "logreg_prob", "logreg_logprob"]
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--n-boot", type=int, default=2000)
-    args = ap.parse_args()
+    frozen = ap.add_argument_group(
+        "frozen numerical constants",
+        "Defaults are the values behind §7 of "
+        "docs/cnv-wsi-fusion-external-validation.md. Changing one changes the published table.")
+    frozen.add_argument("--n-boot", type=int, default=N_BOOT,
+                        help="paired-bootstrap resamples (default: %(default)s)")
+    frozen.add_argument("--bootstrap-seed", type=int, default=BOOTSTRAP_SEED,
+                        help="RNG seed for the bootstrap resamples (default: %(default)s)")
+    frozen.add_argument("--stacker-C", type=float, default=STACKER_C,
+                        help="inverse regularisation of the logreg stackers "
+                             "(default: %(default)s)")
+    frozen.add_argument("--stacker-max-iter", type=int, default=STACKER_MAX_ITER,
+                        help="max_iter of the logreg stackers (default: %(default)s)")
+    frozen.add_argument("--nm-xatol", type=float, default=NM_XATOL,
+                        help="Nelder-Mead xatol for the weight rules (default: %(default)s)")
+    frozen.add_argument("--nm-fatol", type=float, default=NM_FATOL,
+                        help="Nelder-Mead fatol for the weight rules (default: %(default)s)")
+    frozen.add_argument("--nm-maxiter", type=int, default=NM_MAXITER,
+                        help="Nelder-Mead iteration cap (default: %(default)s)")
+    frozen.add_argument("--clip-floor", type=float, default=CLIP_FLOOR,
+                        help="probability floor for log-loss and log-prob features "
+                             "(default: %(default)s)")
+    return ap
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    rule_kwargs = dict(stacker_C=args.stacker_C, stacker_max_iter=args.stacker_max_iter,
+                       nm_xatol=args.nm_xatol, nm_fatol=args.nm_fatol,
+                       nm_maxiter=args.nm_maxiter, clip_floor=args.clip_floor)
 
     w = load_clam_oof(with_folds=True)
     X_all, y_all_labels = load_tcga_arms()
@@ -136,7 +196,8 @@ def main() -> int:
         P = np.zeros_like(Pw)
         for f in np.unique(folds):
             te = folds == f
-            P[te] = apply_rule(fit_rule(kind, Pw[~te], Pc[~te], y[~te].values), Pw[te], Pc[te])
+            P[te] = apply_rule(fit_rule(kind, Pw[~te], Pc[~te], y[~te].values, **rule_kwargs),
+                               Pw[te], Pc[te], clip_floor=args.clip_floor)
         oof[kind] = P
         rows.append({"rule": kind, "macroAUROC": round(macro_auroc(y.values, P), 3),
                      "balAcc": round(balanced_acc(y.values, P), 3)})
@@ -146,7 +207,7 @@ def main() -> int:
                     "balAcc": round(balanced_acc(y.values, Pc), 3)})
     print(pd.DataFrame(rows).to_string(index=False))
 
-    idx = bootstrap_indices(y.values, args.n_boot, seed=11)
+    idx = bootstrap_indices(y.values, args.n_boot, seed=args.bootstrap_seed)
     base_scores = np.array([macro_auroc(y.values[j], oof["mean"][j]) for j in idx])
     print("\nvs the equal-weight mean, paired bootstrap:")
     for kind in RULES[1:]:
@@ -172,9 +233,10 @@ def main() -> int:
     print(f"\n=== EXTERNAL CPTAC ({len(ye)} cases), rules fit on all TCGA out-of-fold pairs ===")
     arms = {"WSI alone": Ew, "CNV alone": Ec}
     for kind in RULES:
-        arms[kind] = apply_rule(fit_rule(kind, Pw, Pc, y.values), Ew, Ec)
+        arms[kind] = apply_rule(fit_rule(kind, Pw, Pc, y.values, **rule_kwargs), Ew, Ec,
+                                clip_floor=args.clip_floor)
 
-    eidx = bootstrap_indices(ye, args.n_boot, seed=11)
+    eidx = bootstrap_indices(ye, args.n_boot, seed=args.bootstrap_seed)
     escore = {name: np.array([[macro_auroc(ye[j], P[j]), balanced_acc(ye[j], P[j])] for j in eidx])
               for name, P in arms.items()}
 

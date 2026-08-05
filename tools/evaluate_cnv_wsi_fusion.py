@@ -31,23 +31,50 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
-from pam50_arms import (CLASSES, CPTAC_ARMS, CPTAC_WSI_PROBS, balanced_acc, bootstrap_indices,
-                        clam_column_order, cnv_arm, delta_ci, load_clam_oof, load_cptac_arms,
-                        load_cptac_wsi_probs, load_tcga_arms, macro_auroc, renormalise)
+# `tools.pam50_arms`, not a bare `pam50_arms`: the bare form only resolves when Python puts this
+# script's own directory on sys.path, i.e. under `python tools/evaluate_cnv_wsi_fusion.py` and
+# nowhere else, so `dp-analysis` could not import this module at all. The package form works for
+# both, and binds the same module object either way. `pip install -e .` is what puts the
+# repository root on sys.path; the direct invocation keeps working exactly as before.
+try:
+    from tools.pam50_arms import (CLASSES, CPTAC_ARMS, CPTAC_WSI_PROBS, balanced_acc,
+                                  bootstrap_indices, clam_column_order, cnv_arm, delta_ci,
+                                  load_clam_oof, load_cptac_arms, load_cptac_wsi_probs,
+                                  load_tcga_arms, macro_auroc, renormalise)
+except ModuleNotFoundError as exc:  # pragma: no cover - install error, not a code path
+    raise ModuleNotFoundError(
+        f"{exc}. Run `pip install -e .` from the repository root once; after that this script "
+        "runs from any working directory."
+    ) from exc
+
+# --- Frozen numerical constants ------------------------------------------------------------
+# Every published figure in docs/cnv-wsi-fusion-external-validation.md was produced at these
+# values. They are named (rather than inlined) so a test can assert them and so `dp-analysis`
+# can surface them, NOT so they can be retuned: the confidence intervals in that document are a
+# function of N_BOOT and BOOTSTRAP_SEED, and the internal CNV column is a function of the two
+# CV settings. `stack_wsi_cnv.py` deliberately uses a *different* bootstrap seed (11); the two
+# scripts are not meant to share one.
+N_BOOT = 4000
+BOOTSTRAP_SEED = 7
+CV_FOLDS = 10
+CV_SEED = 0
+#: Saerens-Latinne-Decaestecker fixed-point iteration budget and convergence tolerance.
+SLD_ITERS = 500
+SLD_TOL = 1e-9
 
 
-def sld_em(P, prior, iters=500):
+def sld_em(P, prior, iters=SLD_ITERS, tol=SLD_TOL):
     """Saerens-Latinne-Decaestecker: estimate target priors from unlabelled probabilities."""
     pi = prior.copy()
     for _ in range(iters):
         new = renormalise(P * (pi / prior)).mean(0)
-        if np.abs(new - pi).max() < 1e-9:
+        if np.abs(new - pi).max() < tol:
             break
         pi = new
     return pi
 
 
-def report(y, models, n_boot=4000, seed=7):
+def report(y, models, n_boot=N_BOOT, seed=BOOTSTRAP_SEED):
     idx = bootstrap_indices(y, n_boot, seed)
 
     # Score every model on every resample ONCE. Each pairwise delta is then a column
@@ -119,7 +146,7 @@ def external(args):
         "CNV (39 arms)": Pc,
         "Fusion raw": (Pw + Pc) / 2,
         "Fusion balanced": (Pwb + Pc) / 2,
-    }, n_boot=args.n_boot)
+    }, n_boot=args.n_boot, seed=args.bootstrap_seed)
 
 
 def internal(args):
@@ -133,20 +160,38 @@ def internal(args):
     clam_order = clam_column_order(w, yy)
     Pw = w[[f"p{i}" for i in range(4)]].values[:, [clam_order.index(c) for c in CLASSES]]
     Pc = cross_val_predict(cnv_arm(), X, yy,
-                           cv=StratifiedKFold(10, shuffle=True, random_state=0),
+                           cv=StratifiedKFold(args.cv_folds, shuffle=True,
+                                              random_state=args.cv_seed),
                            method="predict_proba")
     print(f"\n=== INTERNAL TCGA, {len(common)} cases with CLAM out-of-fold, both 10-fold ===")
     print(f"CLAM class order on disk: {clam_order}")
     report(yy.values, {"WSI": Pw, "CNV (39 arms)": Pc, "Fusion": (Pw + Pc) / 2},
-           n_boot=args.n_boot)
+           n_boot=args.n_boot, seed=args.bootstrap_seed)
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--internal", action="store_true", help="also run the TCGA-only comparison")
-    ap.add_argument("--n-boot", type=int, default=4000)
-    args = ap.parse_args()
+    frozen = ap.add_argument_group(
+        "frozen numerical constants",
+        "Defaults are the values behind every number in "
+        "docs/cnv-wsi-fusion-external-validation.md. Changing one changes the published table.")
+    frozen.add_argument("--n-boot", type=int, default=N_BOOT,
+                        help="paired-bootstrap resamples (default: %(default)s)")
+    frozen.add_argument("--bootstrap-seed", type=int, default=BOOTSTRAP_SEED,
+                        help="RNG seed for the bootstrap resamples (default: %(default)s)")
+    frozen.add_argument("--cv-folds", type=int, default=CV_FOLDS,
+                        help="StratifiedKFold splits for the internal CNV arm "
+                             "(default: %(default)s)")
+    frozen.add_argument("--cv-seed", type=int, default=CV_SEED,
+                        help="StratifiedKFold random_state for the internal CNV arm "
+                             "(default: %(default)s)")
+    return ap
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
 
     for p in (CPTAC_WSI_PROBS, CPTAC_ARMS):
         if not p.exists():

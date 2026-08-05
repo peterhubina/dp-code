@@ -7,6 +7,18 @@ setting drifts between the two scripts their tables silently stop describing the
 
 Nothing here reads a slide. The WSI arm is consumed as probabilities already written to disk by
 the CLAM training and external-validation runs.
+
+**Every filesystem location the CNV thread touches is resolved here and nowhere else.**
+``evaluate_cnv_wsi_fusion.py``, ``stack_wsi_cnv.py``, ``make_cnv_tabular.py`` and
+``compare_fusion_ladder.py`` import the constants below rather than spelling any path themselves,
+so pointing the thread at another machine is one change to ``dpcode/conf/paths/default.yaml`` (or
+to ``DP_DATA_ROOT`` / ``DP_SCRATCH_ROOT``), not five.
+
+``dpcode.paths.resolve_paths`` returns exactly what a Hydra-composed ``paths`` group resolves to,
+without importing Hydra and without depending on the working directory, so ``dp-analysis`` and a
+bare ``python tools/evaluate_cnv_wsi_fusion.py`` land on the same files. The one thing it cannot
+see is a command-line ``paths.x=…`` override, because that exists only inside a composed config —
+``dpcode/cli/analysis.py`` checks for that case and refuses rather than silently ignoring it.
 """
 
 from pathlib import Path
@@ -18,17 +30,39 @@ from sklearn.metrics import balanced_accuracy_score, roc_auc_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-REPO = Path(__file__).resolve().parent.parent
+try:
+    from dpcode.paths import resolve_paths
+except ImportError as exc:  # pragma: no cover - install error, not a code path
+    raise ImportError(
+        f"{exc}. The dp-code package is not installed, so filesystem locations cannot be "
+        "resolved. Run `pip install -e .` from the repository root."
+    ) from exc
+
+_PATHS = resolve_paths()
 
 #: Sorted, and every probability matrix in both scripts is in this column order.
+#: CLAM's own ``label_dict`` order is different (LumA, LumB, Basal, Her2) — see
+#: :func:`clam_column_order`, which is the only bridge between the two.
 CLASSES = np.array(["Basal", "Her2", "LumA", "LumB"])
 
-TCGA_ARMS = REPO / ".datasets/cnv/tcga_brca_cna_arm.csv"
-CPTAC_ARMS = REPO / ".datasets/cnv/cptac_brca_cna_arm.csv"
-TCGA_LABELS = REPO / "tools/data/tcga_brca_pam50_labels.csv"
-CPTAC_WSI_PROBS = REPO / ".scratch/cptac_validation/results/predictions/ensemble_predictions.csv"
-CLAM_OOF = REPO / ".scratch/results/pam50_final_s1"
-CLAM_SPLITS = REPO / "project/CLAM/splits/tcga_brca_subtyping_100"
+#: The CLAM run whose out-of-fold probabilities are the WSI arm, and the split set behind it.
+#: Both are identities of a completed run, not tunables: changing either silently repoints every
+#: internal number in ``docs/cnv-wsi-fusion-external-validation.md`` at a different model.
+WSI_BASELINE_RUN = "pam50_final_s1"
+SPLIT_SET = "tcga_brca_subtyping_100"
+
+REPO = Path(_PATHS["repo_root"])
+
+TCGA_ARMS = Path(_PATHS["cnv_dir"]) / "tcga_brca_cna_arm.csv"
+CPTAC_ARMS = Path(_PATHS["cnv_dir"]) / "cptac_brca_cna_arm.csv"
+TCGA_LABELS = Path(_PATHS["labels_dir"]) / "tcga_brca_pam50_labels.csv"
+CPTAC_LABELS = Path(_PATHS["cptac_root"]) / "cptac_brca_pam50_dataset.csv"
+CLAM_DATASET_CSV = Path(_PATHS["dataset_csv_dir"]) / "tcga_brca_subtyping.csv"
+CNV_TABULAR_DIR = Path(_PATHS["cnv_tabular_dir"])
+CPTAC_WSI_PROBS = (Path(_PATHS["cptac_validation_dir"])
+                   / "results/predictions/ensemble_predictions.csv")
+CLAM_OOF = Path(_PATHS["results_root"]) / WSI_BASELINE_RUN
+CLAM_SPLITS = Path(_PATHS["splits_root"]) / SPLIT_SET
 
 
 def case_of(slide_id: str) -> str:
@@ -48,10 +82,21 @@ def balanced_acc(y, probs) -> float:
     return balanced_accuracy_score(y, CLASSES[probs.argmax(1)])
 
 
-def cnv_arm():
+#: The CNV arm's three hyperparameters, named so a test can assert them and a report can quote
+#: them. ``C=0.1`` is quoted in ``docs/cnv-wsi-fusion-external-validation.md`` and was chosen by
+#: the regularisation sweep recorded there (0.879 / 0.870 / 0.860 / 0.856 at C = 0.01 / 0.1 / 1 /
+#: 10); it is the published model, not a default to be revisited. Overriding any of these produces
+#: a *different* CNV arm — do it only for an explicitly labelled ablation.
+CNV_C = 0.1
+CNV_MAX_ITER = 4000
+CNV_CLASS_WEIGHT = "balanced"
+
+
+def cnv_arm(C: float = CNV_C, max_iter: int = CNV_MAX_ITER,
+            class_weight=CNV_CLASS_WEIGHT):
     """The CNV arm, defined once. Balanced because Her2 is 8% of TCGA."""
     return make_pipeline(StandardScaler(),
-                         LogisticRegression(max_iter=4000, C=0.1, class_weight="balanced"))
+                         LogisticRegression(max_iter=max_iter, C=C, class_weight=class_weight))
 
 
 def load_tcga_arms():

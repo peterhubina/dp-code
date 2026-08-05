@@ -55,11 +55,20 @@ Sample ids are normalised to the case ids this repo already keys on:
 
 ``--cohort-only`` (the default) keeps only cases that have UNI2-h features on disk,
 so the matrices line up row-for-row with the CLAM datasets: 981 TCGA / 114 CPTAC.
+
+Every location and every remote comes from the ``paths`` and ``sources`` config groups
+(``dpcode/conf/{paths,sources}/default.yaml``), read through ``dpcode.paths`` so this script and
+a Hydra-composed entry point resolve identically. The two entries that matter most are visible
+there precisely because they are *not* pinned: the datahub is fetched from a moving ``master``
+branch and UCSC ``refGene`` is a live table, which is why the derived gene->arm map is checksummed
+against a tracked copy rather than trusted to be reproducible from the remotes.
 """
 
 import argparse
 import csv
+import hashlib
 import io
+import shutil
 import sys
 from pathlib import Path
 
@@ -67,23 +76,55 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-REPO = Path(__file__).resolve().parent.parent
-DATAHUB = "https://media.githubusercontent.com/media/cBioPortal/datahub/master/public"
-CBIOPORTAL = "https://www.cbioportal.org/api"
+try:
+    from dpcode.paths import conf_dir, register_resolvers, resolve_paths
+except ImportError as exc:  # pragma: no cover - install error, not a code path
+    raise ImportError(
+        f"{exc}. The dp-code package is not installed, so filesystem locations and remote "
+        "endpoints cannot be resolved. Run `pip install -e .` from the repository root."
+    ) from exc
+
+
+def _sources() -> dict:
+    """`dpcode/conf/sources/default.yaml`, resolved, as a plain dict.
+
+    The paths counterpart is `dpcode.paths.resolve_paths`; sources has no such helper because
+    this is the only script that needs the whole group outside Hydra.
+    """
+    from omegaconf import OmegaConf
+
+    register_resolvers()
+    loaded = OmegaConf.load(conf_dir() / "sources" / "default.yaml")
+    return OmegaConf.to_container(loaded, resolve=True)  # type: ignore[return-value]
+
+
+PATHS = resolve_paths()
+SOURCES = _sources()
+
+REPO = Path(PATHS["repo_root"])
+DATAHUB = SOURCES["cbioportal_datahub_url"]
+CBIOPORTAL = SOURCES["cbioportal_api_base"]
+UCSC = SOURCES["ucsc_goldenpath_base"]
+
+#: Tracked copy of the gene->arm map, and the manifest carrying its SHA256. This is the only
+#: thing pinning the 39 arm features: see tools/data/reference/CHECKSUMS.sha256.
+GENE_ARM_FILENAME = "gene_arm_hg38.csv"
+TRACKED_REFERENCE_DIR = Path(PATHS["labels_dir"]) / "reference"
+CHECKSUM_MANIFEST = TRACKED_REFERENCE_DIR / "CHECKSUMS.sha256"
 
 COHORTS = {
     "tcga": {
-        "study": "brca_tcga_pan_can_atlas_2018",
-        "sample_list": "brca_tcga_pan_can_atlas_2018_sequenced",
-        "mut_profile": "brca_tcga_pan_can_atlas_2018_mutations",
-        "labels": REPO / "tools/data/tcga_brca_pam50_labels.csv",
+        "study": SOURCES["tcga_study_id"],
+        "sample_list": f"{SOURCES['tcga_study_id']}_sequenced",
+        "mut_profile": f"{SOURCES['tcga_study_id']}_mutations",
+        "labels": Path(PATHS["labels_dir"]) / "tcga_brca_pam50_labels.csv",
         "label_col": "case_id",
     },
     "cptac": {
-        "study": "brca_cptac_2020",
-        "sample_list": "brca_cptac_2020_sequenced",
-        "mut_profile": "brca_cptac_2020_mutations",
-        "labels": REPO / ".datasets/cptac-brca/cptac_brca_pam50_dataset.csv",
+        "study": SOURCES["cptac_study_id"],
+        "sample_list": f"{SOURCES['cptac_study_id']}_sequenced",
+        "mut_profile": f"{SOURCES['cptac_study_id']}_mutations",
+        "labels": Path(PATHS["cptac_root"]) / "cptac_brca_pam50_dataset.csv",
         "label_col": "case_id",
     },
 }
@@ -102,6 +143,18 @@ ARMS = [f"{c}{a}" for c in list(range(1, 23)) for a in ("p", "q")
         if f"{c}{a}" not in {"13p", "14p", "15p", "21p", "22p"}]
 
 
+def display(path: Path) -> str:
+    """Repo-relative when the output is inside the repo, absolute otherwise.
+
+    ``--out`` may legitimately point outside the repository, and an unconditional
+    ``relative_to(REPO)`` would raise *after* the file had already been written.
+    """
+    try:
+        return str(path.relative_to(REPO))
+    except ValueError:
+        return str(path)
+
+
 def to_case_id(sample_id: str, cohort: str) -> str:
     """cBioPortal sample id -> the case id the rest of this repo keys on."""
     if cohort == "tcga":
@@ -117,13 +170,27 @@ def is_primary_tumour(sample_id: str, cohort: str) -> bool:
     return len(parts) < 4 or parts[3].startswith("01")
 
 
-def wsi_cases(cohort: str) -> set[str] | None:
-    """Cases with UNI2-h features on disk, or None if the label file is missing."""
+def wsi_cases(cohort: str) -> set[str]:
+    """Cases with UNI2-h features on disk. Missing label table is fatal.
+
+    This used to warn on stderr and fall back to "keep every case in the study", which is the
+    worst possible failure mode for the CPTAC side: the run *succeeds*, writes
+    `cptac_brca_cna_arm.csv` with far more than the 114 cohort rows, and every downstream
+    external number is then computed over a case set nobody chose. The escape hatch is explicit
+    (`--all-cases`), so an operator who genuinely wants every case says so.
+    """
     cfg = COHORTS[cohort]
     path = cfg["labels"]
     if not path.exists():
-        print(f"  ! {path} not found — keeping all cases", file=sys.stderr)
-        return None
+        raise SystemExit(
+            f"{cohort}: cohort filter needs {path}, which does not exist.\n"
+            f"  For cptac this file is written by the CPTAC acquisition chain "
+            f"(tools/cptac/); for tcga it is tracked and a missing copy means a broken "
+            f"checkout.\n"
+            f"  Pass --all-cases to keep every case in the study instead — but note that the "
+            f"published matrices are 981 TCGA / 114 CPTAC rows, so --all-cases does not "
+            f"reproduce them."
+        )
     with open(path) as fh:
         return {r[cfg["label_col"]].strip() for r in csv.DictReader(fh)}
 
@@ -218,18 +285,84 @@ def fetch_mutations(cohort: str, keep: set[str] | None) -> pd.DataFrame:
     return df
 
 
+def expected_gene_arm_sha256() -> str | None:
+    """The digest recorded in the tracked manifest, or None if it is unreadable."""
+    if not CHECKSUM_MANIFEST.exists():
+        return None
+    for line in CHECKSUM_MANIFEST.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("#") or not line:
+            continue
+        digest, _, name = line.partition("  ")
+        if name.strip() == GENE_ARM_FILENAME:
+            return digest.strip()
+    return None
+
+
+def verify_gene_arm_map(path: Path) -> None:
+    """Warn loudly if the gene->arm map on disk is not the one behind the published numbers.
+
+    Never fatal. A mismatch is a legitimate state (someone deliberately rebuilt the map from a
+    newer refGene), and failing here would block an ablation. But it MUST be impossible to
+    produce arm features from a different map without seeing it said out loud, because every arm
+    median and therefore every CNV AUROC in the thesis depends on this file.
+    """
+    expected = expected_gene_arm_sha256()
+    if expected is None:
+        print(f"  ! no checksum for {GENE_ARM_FILENAME} in {CHECKSUM_MANIFEST} — "
+              f"cannot verify the gene->arm map", file=sys.stderr)
+        return
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual == expected:
+        print(f"    gene->arm map checksum OK ({actual[:12]}…)")
+        return
+    print("\n" + "!" * 88, file=sys.stderr)
+    print(f"!! {path}", file=sys.stderr)
+    print(f"!!   sha256 {actual}", file=sys.stderr)
+    print(f"!!   expected {expected}  (tools/data/reference/CHECKSUMS.sha256)", file=sys.stderr)
+    print("!! This is NOT the gene->arm map behind the published arm-level CNV numbers. UCSC "
+          "refGene is a", file=sys.stderr)
+    print("!! live table, so a rebuilt map reassigns genes to arms, which moves every arm "
+          "median and every", file=sys.stderr)
+    print("!! AUROC in docs/cnv-wsi-fusion-external-validation.md. Restore the tracked copy "
+          "with:", file=sys.stderr)
+    print(f"!!   cp {TRACKED_REFERENCE_DIR / GENE_ARM_FILENAME} {path}", file=sys.stderr)
+    print("!" * 88 + "\n", file=sys.stderr)
+
+
 def gene_arm_map(cache: Path) -> dict[str, str]:
-    """Hugo symbol -> chromosome arm ('17q'), from UCSC refGene placed into cytoBand intervals."""
+    """Hugo symbol -> chromosome arm ('17q'), from UCSC refGene placed into cytoBand intervals.
+
+    Resolution order, unchanged for anyone who already has the cache: the cached CSV under
+    ``--out/reference`` wins, then the tracked copy under ``tools/data/reference/``, and only
+    then a live rebuild from UCSC. The tracked copy sits in the middle because it is the pin —
+    a fresh clone that fell straight through to the network would silently get a *different*
+    39-feature space from the one the thesis reports.
+    """
     cache.mkdir(parents=True, exist_ok=True)
-    hit = cache / "gene_arm_hg38.csv"
+    hit = cache / GENE_ARM_FILENAME
     if hit.exists():
+        verify_gene_arm_map(hit)
         got = pd.read_csv(hit)
         return dict(zip(got["gene"], got["arm"]))
 
-    ucsc = "https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database"
-    bands = pd.read_csv(f"{ucsc}/cytoBand.txt.gz", sep="\t", compression="gzip",
+    tracked = TRACKED_REFERENCE_DIR / GENE_ARM_FILENAME
+    if tracked.exists():
+        shutil.copyfile(tracked, hit)
+        print(f"    seeded the gene->arm map from the tracked pin {display(tracked)}")
+        verify_gene_arm_map(hit)
+        got = pd.read_csv(hit)
+        return dict(zip(got["gene"], got["arm"]))
+
+    print(f"  ! {tracked} is missing, so the gene->arm map is being rebuilt from the LIVE UCSC "
+          f"hg38 tables.\n"
+          f"  ! refGene is not versioned: the 39 arm features this produces may differ from the "
+          f"published ones.", file=sys.stderr)
+    ucsc = UCSC
+    bands = pd.read_csv(f"{ucsc}/{SOURCES['ucsc_cytoband_file']}", sep="\t", compression="gzip",
                         names=["chrom", "start", "end", "band", "stain"])
-    genes = pd.read_csv(f"{ucsc}/refGene.txt.gz", sep="\t", compression="gzip", header=None,
+    genes = pd.read_csv(f"{ucsc}/{SOURCES['ucsc_refgene_file']}", sep="\t", compression="gzip",
+                        header=None,
                         usecols=[2, 4, 5, 12], names=["chrom", "tx_start", "tx_end", "gene"])
 
     # Autosomes plus X; chrY is excluded because copy number there is confounded by sex and
@@ -257,7 +390,7 @@ def gene_arm_map(cache: Path) -> dict[str, str]:
                 out[gene] = bb["arm"].iloc[i]
 
     pd.DataFrame({"gene": list(out), "arm": list(out.values())}).to_csv(hit, index=False)
-    print(f"    built gene->arm map for {len(out)} genes -> {hit.relative_to(REPO)}")
+    print(f"    built gene->arm map for {len(out)} genes -> {display(hit)}")
     return out
 
 
@@ -328,7 +461,7 @@ def mutation_matrix(tidy: pd.DataFrame, genes: list[str]) -> pd.DataFrame:
     return mat.reindex(sorted(set(tidy["case_id"])), fill_value=0).astype("int8")
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--what", choices=["cna", "mutations", "all"], default="all")
@@ -341,8 +474,13 @@ def main() -> int:
                     help="keep every case in the study, not just those with WSI features")
     ap.add_argument("--top-mutated", type=int, default=50,
                     help="genes in the binary mutation matrix, by TCGA frequency")
-    ap.add_argument("--out", type=Path, default=REPO / ".datasets/cnv")
-    args = ap.parse_args()
+    ap.add_argument("--out", type=Path, default=Path(PATHS["cnv_dir"]),
+                    help="output directory (default: paths.cnv_dir = %(default)s)")
+    return ap
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
 
     args.out.mkdir(parents=True, exist_ok=True)
     keep = {c: (None if args.all_cases else wsi_cases(c)) for c in COHORTS}
@@ -362,7 +500,7 @@ def main() -> int:
             for c, df in cna.items():
                 path = args.out / f"{c}_brca_cna_gistic.csv"
                 df[shared].to_csv(path)
-                print(f"  wrote {path.relative_to(REPO)}  {df.shape[0]} x {len(shared)}")
+                print(f"  wrote {display(path)}  {df.shape[0]} x {len(shared)}")
 
         if need_log2:
             print("copy number — continuous log2 (gene level)")
@@ -375,7 +513,7 @@ def main() -> int:
                 for c, df in log2.items():
                     path = args.out / f"{c}_brca_cna_log2.csv"
                     df.to_csv(path)
-                    print(f"  wrote {path.relative_to(REPO)}  {df.shape[0]} x {df.shape[1]}")
+                    print(f"  wrote {display(path)}  {df.shape[0]} x {df.shape[1]}")
 
             if "arm" in want:
                 print("copy number — arm level (derived; the sWGS-reachable representation)")
@@ -384,7 +522,7 @@ def main() -> int:
                     arms = arm_level(df, gene2arm)
                     path = args.out / f"{c}_brca_cna_arm.csv"
                     arms.to_csv(path)
-                    print(f"  wrote {path.relative_to(REPO)}  {arms.shape[0]} x {arms.shape[1]}")
+                    print(f"  wrote {display(path)}  {arms.shape[0]} x {arms.shape[1]}")
                     if c == "tcga" and args.validate_arms:
                         validate_arms(arms, args.out / "reference")
 
@@ -394,7 +532,7 @@ def main() -> int:
         for c, df in tidy.items():
             path = args.out / f"{c}_brca_mutations.csv"
             df.to_csv(path, index=False)
-            print(f"  wrote {path.relative_to(REPO)}  {len(df)} calls, "
+            print(f"  wrote {display(path)}  {len(df)} calls, "
                   f"{df['case_id'].nunique()} cases")
 
         # Gene panel chosen on TCGA alone; picking it on the pooled data would leak
@@ -407,7 +545,7 @@ def main() -> int:
             path = args.out / f"{c}_brca_mutation_matrix.csv"
             mat.to_csv(path)
             rate = mat.values.mean()
-            print(f"  wrote {path.relative_to(REPO)}  {mat.shape[0]} x {mat.shape[1]}"
+            print(f"  wrote {display(path)}  {mat.shape[0]} x {mat.shape[1]}"
                   f"  (mean mutation rate {rate:.3f})")
         print("  panel:", ", ".join(genes[:12]), "…")
 

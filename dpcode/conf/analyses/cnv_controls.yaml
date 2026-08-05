@@ -1,0 +1,60 @@
+# @package analysis
+#
+# The control numbers docs/cnv-wsi-fusion-external-validation.md reports and no script produced.
+#
+# NOTE the directory name. This group's OPTIONS live in `dpcode/conf/analyses/` while the config
+# key they populate is `analysis`, because `.gitignore:74` is a bare `analysis` pattern, which
+# matches a directory of that name at any depth — `dpcode/conf/analysis/` could never have been
+# committed and a fresh clone would have failed to compose. Same trap as the `wandb` group in
+# DESIGN-ADDENDUM A2, same remedy: `.gitignore` is left untouched and the directory is renamed.
+# The `# @package analysis` line MUST stay on line 1 — Hydra only reads the directive from the
+# very first line — and it is what keeps the config key unchanged, so every override is still
+# spelled `analysis.<key>=…`.
+#
+# Six figures in that document had no producer anywhere in the repository: the per-class AUROC
+# table (§3 — `report()` in evaluate_cnv_wsi_fusion.py prints per-class RECALL, never AUROC), the
+# error-independence phi (§3), and four rows of the controls table (§4). The one CLAUDE.md makes
+# non-negotiable to report is aneuploidy burden alone: at 0.685 it is high enough that Basal
+# ~0.97 reads as pure genome instability unless the arm *pattern* is shown to add to it.
+#
+# This action recomputes all of them from files already on disk and prints each beside its
+# published value. It NEVER edits a document and never rewrites a number — a mismatch is printed
+# and left for a human.
+
+action: cnv_controls
+
+# --- protocols ---------------------------------------------------------------------------------
+# Two are in play and they are not interchangeable. The headline internal figure (0.866 +- 0.003)
+# is 5-fold CV averaged over ten reseeds; the burden control, the regularisation sweep and the
+# site holdout are single 5-fold runs at `single_seed`. Both are printed, and the one matching the
+# published value is marked.
+cv_folds: 5
+cv_seeds: 10          # seeds 0 .. cv_seeds-1
+single_seed: 0
+
+# The internal WSI/CNV head-to-head reuses evaluate_cnv_wsi_fusion.py's own CV settings so its
+# per-class table is the same object as the one in §5 of the document.
+oof_cv_folds: 10
+oof_cv_seed: 0
+
+# --- the model under test ----------------------------------------------------------------------
+# Must equal tools/pam50_arms.CNV_C for the controls to describe the published arm.
+cnv_C: 0.1
+
+# --- aneuploidy burden -------------------------------------------------------------------------
+# `mean_abs_log2` is the published definition and reproduces 0.685 exactly at `single_seed`.
+# `frac_altered` (fraction of arms with |log2| above `burden_threshold`) is the other common
+# reading of "burden" and gives 0.673 — a different number for the same word, which is why the
+# definition is a config key rather than an unwritten assumption.
+burden_definition: mean_abs_log2      # mean_abs_log2 | frac_altered
+burden_threshold: 0.2                 # used only by frac_altered
+
+# --- regularisation sweep ----------------------------------------------------------------------
+c_grid: [0.01, 0.1, 1.0, 10.0]
+
+# --- leave-one-TCGA-site-out -------------------------------------------------------------------
+# Site is the second barcode field (TCGA-A2-A0T2 -> A2). Sites missing a class are reported and
+# skipped: a 3-class macro AUROC is not comparable to a 4-class one.
+min_site_cases: 25
+
+class_order: [Basal, Her2, LumA, LumB]

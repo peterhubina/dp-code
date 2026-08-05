@@ -1,0 +1,29 @@
+# @package analysis
+#
+# Compare the five trained fusion operators against the WSI-only model and the probability mean.
+#
+# NOTE the directory name. This group's OPTIONS live in `dpcode/conf/analyses/` while the config
+# key they populate is `analysis`, because `.gitignore:74` is a bare `analysis` pattern, which
+# matches a directory of that name at any depth — `dpcode/conf/analysis/` could never have been
+# committed and a fresh clone would have failed to compose. Same trap as the `wandb` group in
+# DESIGN-ADDENDUM A2, same remedy: `.gitignore` is left untouched and the directory is renamed.
+# The `# @package analysis` line MUST stay on line 1 — Hydra only reads the directive from the
+# very first line — and it is what keeps the config key unchanged, so every override is still
+# spelled `analysis.<key>=…`.
+#
+# Dispatches tools/compare_fusion_ladder.py as a SUBPROCESS. That script is the thesis author's
+# live work and is not edited by this refactor; it already anchors every path on `Path(__file__)`,
+# so it runs correctly from any working directory, and launching rather than importing it keeps
+# its `from pam50_arms import ...` resolving exactly as it does when run by hand.
+#
+# It reads .scratch/results/pam50_wsi_cnv_<mode>_s1 for the five completed ladder arms. Those runs
+# cost about 2h38m of GPU time and live in a gitignored tree; nothing here writes into them.
+#
+# The published verdict: every trained operator loses to the untrained equal-weight mean, five
+# operators ensembled still lose to two independently trained ones, and the mechanism is error
+# correlation (phi 0.656 among the operators, 0.193 between the two unimodal arms).
+
+action: compare_fusion_ladder
+
+# The script's only flag. Its bootstrap seed is fixed inside the script.
+n_boot: 2000
