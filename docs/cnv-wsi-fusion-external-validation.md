@@ -1,7 +1,7 @@
 # WSI + arm-level CNV → PAM50: external validation on CPTAC-BRCA
 
 **Date:** 2026-08-03
-**Reproduce:** `python tools/evaluate_cnv_wsi_fusion.py --internal`
+**Reproduce:** `python tools/evaluate_cnv_wsi_fusion.py --internal` and `python tools/stack_wsi_cnv.py`
 **Train:** TCGA-BRCA. **External test:** CPTAC-BRCA, n = 114 cases (Basal 27, Her2 14, LumA 56, LumB 17).
 **Nothing was refit or tuned on CPTAC.** The fusion rule (equal-weight mean of the two probability
 vectors) was fixed on TCGA before the external set was touched.
@@ -164,7 +164,62 @@ of transfer degradation to staining and feature-space divergence.
 
 ---
 
-## 7. Positioning
+## 7. Does a learned fusion rule beat the equal-weight mean? No.
+
+**Reproduce:** `python tools/stack_wsi_cnv.py`. Asked before building a joint fusion head, because
+if a stacker handed both probability vectors cannot beat their unweighted average, a
+jointly-trained head is unlikely to. Five rules of increasing freedom: fixed mean, one learned
+scalar weight, per-class weights, multinomial logistic regression on the 8 concatenated
+probabilities, and the same on log probabilities.
+
+The CNV arm is refit per CLAM fold so both arms are out-of-fold on the same fold, and each rule is
+scored by nested CV over those fold tags. An independent audit confirmed no leakage; it also found
+that CLAM's 10 splits are drawn independently rather than partitioned, so 242 of 599 cases are
+tested by 2–5 models and `WSI alone` is a small ensemble, flattering it by ~0.01 AUROC. Re-running
+with a random stratified rule-partition gives the same verdict.
+
+Internal, 599 TCGA cases:
+
+| rule | macro AUROC | bal-acc | Δ AUROC vs mean |
+|---|---|---|---|
+| WSI alone | 0.887 | 0.677 | |
+| CNV alone | 0.872 | 0.678 | |
+| **mean** | 0.926 | **0.751** | — |
+| scalar | 0.925 | 0.722 | −0.0012 [−0.0038, +0.0014] ns |
+| per-class | 0.921 | 0.739 | −0.0050 [−0.0143, +0.0031] ns |
+| logreg (probs) | **0.930** | 0.712 | +0.0043 [−0.0040, +0.0125] ns |
+| logreg (log-probs) | 0.927 | 0.710 | +0.0011 [−0.0093, +0.0106] ns |
+
+External CPTAC, 114 cases, paired against the mean:
+
+| rule | macro AUROC [95% CI] | bal-acc [95% CI] | Δ AUROC | Δ bal-acc |
+|---|---|---|---|---|
+| WSI alone | 0.847 [0.794, 0.898] | 0.513 [0.452, 0.582] | −0.063 **sig** | −0.134 **sig** |
+| **CNV alone** | 0.888 [0.840, 0.934] | **0.716** [0.625, 0.805] | −0.021 ns | +0.070 ns |
+| **mean** | 0.909 [0.866, 0.949] | 0.646 [0.550, 0.748] | — | — |
+| scalar | 0.906 [0.860, 0.947] | 0.570 | −0.004 ns | −0.077 **sig worse** |
+| per-class | 0.905 [0.860, 0.947] | 0.553 | −0.004 ns | −0.094 **sig worse** |
+| logreg (probs) | 0.901 [0.851, 0.949] | 0.520 | −0.008 ns | −0.126 **sig worse** |
+| logreg (log-probs) | 0.913 [0.869, 0.953] | 0.520 | +0.003 ns | −0.126 **sig worse** |
+
+**No rule beats the mean on AUROC, internally or externally, and every learned rule is
+significantly worse on balanced accuracy externally.** The mean also has the best internal balanced
+accuracy of all seven. A rule that edges AUROC while losing balanced accuracy is overfitting to
+ranking.
+
+**And CNV alone is statistically indistinguishable from the fusion on both metrics** (ΔAUROC −0.021
+[−0.048, +0.003]; Δbal-acc +0.070 [−0.025, +0.166]), while being significantly better than the WSI
+arm on decisions. That is the central result for the framing this project is pursuing.
+
+The precise scope of the negative result: a stacker on probability vectors can only learn a
+*global* reweighting, and this says there is nothing global to learn — the arms are already
+comparably informative and comparably calibrated. The external φ = −0.006 headroom lives in *which
+cases* each arm gets right, so exploiting it would need an *input-conditional* gate. So this rules
+out global rules, not conditional ones. Given that four groups in the survey report conditional
+gated fusion failing on this task, and that this project's own RNA gate collapsed onto one
+modality, the expected value of building one is low.
+
+## 8. Positioning
 
 From the 50-paper survey in `docs/implementation-research/PAM50/`: **no published multimodal PAM50
 model is externally validated with a PAM50-specific metric.** Amer et al. 2025 (arXiv:2509.03408) is
