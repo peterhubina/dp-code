@@ -61,6 +61,12 @@ keywords = ["computational-pathology", "PAM50", "breast-cancer", "multiple-insta
 # produced is tracked, so reproducing the labels is optional.
 # ---------------------------------------------------------------------------
 dependencies = [
+  # Undeclared transitive dependency of the `topk` git pin below: topk declares only
+  # torch and numpy, but topk/polynomial/multiplication.py imports future.builtins.
+  # It is present in the environment every published number was produced in, so its
+  # absence only shows up on a fresh install — as a mid-training failure of
+  # `--inst_loss svm`, which is what the frozen WSI baseline trains with.
+  "future==1.0.0",
   "h5py==3.16.0",
   "huggingface-hub==1.6.0",
   "hydra-core==1.3.4",
