@@ -1,0 +1,33 @@
+# Primary config for `dp-train` (dpcode/cli/train.py).
+#
+# It is `config.yaml` plus the two groups a CLAM training run needs:
+#
+#   fusion      which fusion operator, if any (the `--fusion_mode` family)
+#   experiment  one file per reproducible experiment, each a faithful transcript
+#               of the shell wrapper it replaces
+#
+# Why a separate primary config rather than adding the groups to `config.yaml`:
+# `config.yaml` is shared by every entry point, and a group listed there would be
+# mandatory for all of them. Hydra's own remedy for a per-entry-point group,
+# `+experiment=…`, is rejected by `dpcode.schema.reject_appended_overrides`, so
+# the group has to sit in the defaults list of the config `@hydra.main` loads.
+#
+# Composition order (Hydra merges top to bottom, last wins):
+#   1. config       schema + paths + sources + clam/base + tracking + the hydra block
+#   2. _self_       this file's own values (it has none; written explicitly so the
+#                   order is a stated fact rather than a version-dependent default)
+#   3. fusion       the operator's CLAM flags
+#   4. experiment   the experiment, which therefore OVERRIDES the operator's flags —
+#                   deliberate: the ER film arm runs film_attention at rank 64 /
+#                   modality_dropout 0.25 while the CNV ladder runs it at 16 / 0.2.
+#
+# `experiment: ???` makes the group mandatory: `dp-train` with no experiment prints
+# Hydra's own "You must specify 'experiment', e.g, experiment=<OPTION>" and lists
+# the options. There is no default experiment on purpose — every option here stands
+# for a published number, and quietly picking one is a way to run the wrong thing.
+
+defaults:
+  - config
+  - _self_
+  - fusion: none
+  - experiment: ???

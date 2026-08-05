@@ -1,0 +1,94 @@
+# @package _global_
+# WSI + RNA gated fusion for PAM50 — the dormant first multimodal thread.
+#
+#   replaces : bash tools/train_pam50_multimodal.sh
+#   run with : dp-train experiment=pam50_wsi_rna_gated \
+#                  'clam.pretrained_wsi_ckpt="${paths.results_root}/pam50_final_s1/s_{fold}_checkpoint.pt"'
+#   writes   : ${paths.results_root}/pam50_wsi_rna_gatedfusion_s1/
+#
+# READ BEFORE USING THIS ARM. PAM50 labels are computed from the same expression
+# matrix that feeds the RNA branch (`project/data/pam50.R`), so an RNA branch
+# predicting PAM50 leaks the target by construction. The old 0.974 gated WSI+RNA
+# number is leakage-inflated and must not be quoted. The thread is kept runnable
+# because the wrapper is still called by `tools/cptac/run_pipeline.sh` phase 6 and
+# because the ER arms — where RNA is NOT the label's source — reuse the same
+# machinery. Copy number carries no such circularity, which is why the live work
+# is `experiment=pam50_wsi_cnv`.
+#
+# `clam.pretrained_wsi_ckpt` is MANDATORY, exactly as `--pretrained_wsi_ckpt` was
+# in the wrapper (missing → `exit 2`). Composition succeeds and `dp-train` stops
+# with the key name before anything is written. Quote any value containing
+# `{fold}`: Hydra's override grammar rejects a bare `{`.
+#
+# `freeze_wsi_branch: true` mirrors the wrapper's default (`FREEZE_WSI=1`); the
+# CNV ladder deliberately does the opposite. `--wandb_tags` reproduces the
+# wrapper's `wsi rna "${FUSION_MODE}-fusion"`, hence the `${fusion.name}`
+# interpolation — selecting `fusion=concat` retags the run to `concat-fusion`, as
+# the wrapper did. The wrapper accepted only `concat` or `gated`; CLAM itself
+# accepts all six, and nothing here narrows that.
+#
+# Tabular input is the LEGACY Xena-derived RNA table under
+# ${paths.rna_legacy_dir}, which is what this arm was trained on. The harmonised
+# GDC tables in ${paths.rna_gdc_dir} are the ones to use for anything new — see
+# the RNA scale-mismatch entry in CLAUDE.md.
+
+defaults:
+  - override /fusion: gated
+
+run:
+  name: pam50_wsi_rna_gated
+
+clam:
+  # data and task
+  task: tcga_brca_subtyping
+  subtyping: true
+  embed_dim: 1536
+
+  # identity — the wrapper's exp_code, kept verbatim so the existing run
+  # directory and this config name the same thing
+  exp_code: pam50_wsi_rna_gatedfusion
+
+  # optimisation
+  max_epochs: 50
+  k: 10
+  k_start: -1
+  k_end: -1
+  seed: 1
+  early_stopping: true
+  patience: 5
+  weighted_sample: true
+  log_data: true
+  drop_out: 0.5
+  opt: adam
+  lr: 0.0001
+  reg: 0.0000025
+
+  # model
+  model_type: clam_mb
+  model_size: big
+  B: 4
+  bag_loss: ce
+  no_inst_cluster: true
+
+  # second modality: 19,944 genes, top-10,000 by training-fold variance
+  tabular_csv: ${paths.rna_legacy_dir}/TCGA_BRCA_RNA_primary_tumor_4class_clam.csv.gz
+  tabular_case_id_col: case_id
+  tabular_hidden_dim: 256
+  tabular_num_layers: 2
+  tabular_top_n_features: 10000
+  fusion_hidden_dim: 32
+
+  # Required, no default — see the header. `???` would NOT work here: OmegaConf
+  # treats a MISSING value in the SOURCE of a merge as "leave the destination
+  # alone", so it would silently inherit clam/base.yaml's `null` and the run would
+  # train from scratch. `${dp.required:…}` raises when resolved, which happens
+  # before dp-train creates anything.
+  pretrained_wsi_ckpt: ${dp.required:clam.pretrained_wsi_ckpt,the per-fold WSI-only checkpoint this arm freezes}
+  freeze_wsi_branch: true
+
+  # tracking (CLAM's own flags). The wrapper passed --wandb_project
+  # unconditionally and --wandb only when enabled; both are on by default here,
+  # matching its defaults. Disable with clam.wandb=false.
+  wandb: true
+  wandb_project: clam-brca-subtyping-cv
+  wandb_tags: [wsi, rna, "${fusion.name}-fusion"]

@@ -1,0 +1,16 @@
+# @package _global_
+# Cross-attention: the tabular embedding attends over the patch tokens.
+#
+# Carries no extra flags. Note for anyone evaluating a checkpoint of this arm:
+# `coattn` also builds a `self.cross_attention` module, so
+# `evaluate_multimodal.infer_fusion_mode` cannot tell the two apart — see the
+# Known gaps in CLAUDE.md. Nothing here fixes that; it is recorded so a reader of
+# this file is not surprised by it.
+#
+# Uses `nn.MultiheadAttention`, which is not bitwise deterministic on CUDA. Seeds
+# and folds are fixed; bitwise reproducibility is not claimed for this arm.
+fusion:
+  name: cross_attention
+
+clam:
+  fusion_mode: cross_attention

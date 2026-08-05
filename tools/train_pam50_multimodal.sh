@@ -1,8 +1,20 @@
 #!/bin/bash
 # Multimodal PAM50 run: WSI CLAM-MB + RNA-seq MLP fusion.
 #
+# THIS IS NOW A SHIM. The configuration lives in
+# `dpcode/conf/experiment/pam50_wsi_rna_gated.yaml`, and the equivalent command is:
+#
+#     dp-train experiment=pam50_wsi_rna_gated \
+#         'clam.pretrained_wsi_ckpt="${paths.results_root}/pam50_final_s1/s_{fold}_checkpoint.pt"'
+#
+# Note the quoting: a value containing `{fold}` MUST be quoted on the command line, because Hydra's
+# override grammar rejects a bare `{`. This script does that quoting for you.
+#
+# The wrapper's own flags are kept and mapped to Hydra overrides one for one, so
+# `tools/cptac/run_pipeline.sh` phase 6 and any existing muscle memory keep working. The rendered
+# argv parses to exactly the namespace this script used to pass.
+#
 # Usage:
-#   cd /workspace/dp-code
 #   bash tools/train_pam50_multimodal.sh \
 #     --pretrained_wsi_ckpt '.scratch/results/pam50_final_s1/s_{fold}_checkpoint.pt'
 
@@ -10,35 +22,24 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-DATA_ROOT_DIR=".datasets/tcga-brca/embeddings"
-TABULAR_CSV=".scratch/TCGA-BRCA-rna/TCGA_BRCA_RNA_primary_tumor_4class_clam.csv.gz"
+DP_TRAIN=(dp-train)
+command -v dp-train >/dev/null 2>&1 || DP_TRAIN=(python -m dpcode.cli.train)
+
 PRETRAINED_WSI_CKPT=""
-RESULTS_DIR=".scratch/results"
-EXP_CODE="pam50_wsi_rna_gatedfusion"
 FUSION_MODE="gated"
-MAX_EPOCHS="50"
-K="10"
-K_START="-1"
-K_END="-1"
-SEED="1"
 WANDB=1
-WANDB_PROJECT="clam-brca-subtyping-cv"
 FREEZE_WSI=1
-TABULAR_HIDDEN_DIM="256"
-TABULAR_NUM_LAYERS="2"
-TABULAR_TOP_N_FEATURES="10000"
-FUSION_HIDDEN_DIM="32"
+EXTRA=()
 
 usage() {
     cat <<'EOF'
-Multimodal PAM50 run: WSI CLAM-MB + RNA-seq MLP fusion.
+Multimodal PAM50 run: WSI CLAM-MB + RNA-seq MLP fusion.  (shim over `dp-train`)
 
 Usage:
-  cd /workspace/dp-code
   bash tools/train_pam50_multimodal.sh \
     --pretrained_wsi_ckpt '.scratch/results/pam50_final_s1/s_{fold}_checkpoint.pt'
 
-Options:
+Options (each maps to one Hydra override; anything else is passed straight through):
   --pretrained_wsi_ckpt PATH  Required. WSI checkpoint path. May include "{fold}".
   --tabular_csv PATH          RNA/tabular feature CSV.
   --data_root_dir PATH        WSI embedding directory.
@@ -59,32 +60,46 @@ Options:
   --tabular_num_layers N      RNA encoder layer count.
   --tabular_top_n_features N  Training-fold RNA feature selection count.
   --fusion_hidden_dim N       Fusion hidden dimension.
+  --dry-run                   Print the CLAM command and write nothing.
   -h, --help                  Show this help.
+
+The equivalent Hydra command is printed before the run starts.
 EOF
+}
+
+# Relative paths are resolved against the repository root, as before.
+repo_path() {
+    local path="$1"
+    if [[ "${path}" = /* ]]; then
+        printf "%s" "${path}"
+    else
+        printf "%s/%s" "${REPO_ROOT}" "${path}"
+    fi
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --pretrained_wsi_ckpt) PRETRAINED_WSI_CKPT="$2"; shift 2 ;;
-        --tabular_csv) TABULAR_CSV="$2"; shift 2 ;;
-        --data_root_dir) DATA_ROOT_DIR="$2"; shift 2 ;;
-        --results_dir) RESULTS_DIR="$2"; shift 2 ;;
-        --exp_code) EXP_CODE="$2"; shift 2 ;;
+        --pretrained_wsi_ckpt) PRETRAINED_WSI_CKPT="$(repo_path "$2")"; shift 2 ;;
+        --tabular_csv) EXTRA+=("clam.tabular_csv=$(repo_path "$2")"); shift 2 ;;
+        --data_root_dir) EXTRA+=("clam.data_root_dir=$(repo_path "$2")"); shift 2 ;;
+        --results_dir) EXTRA+=("clam.results_dir=$(repo_path "$2")"); shift 2 ;;
+        --exp_code) EXTRA+=("clam.exp_code=$2"); shift 2 ;;
         --fusion_mode) FUSION_MODE="$2"; shift 2 ;;
-        --max_epochs) MAX_EPOCHS="$2"; shift 2 ;;
-        --k) K="$2"; shift 2 ;;
-        --k_start) K_START="$2"; shift 2 ;;
-        --k_end) K_END="$2"; shift 2 ;;
-        --seed) SEED="$2"; shift 2 ;;
+        --max_epochs) EXTRA+=("clam.max_epochs=$2"); shift 2 ;;
+        --k) EXTRA+=("clam.k=$2"); shift 2 ;;
+        --k_start) EXTRA+=("clam.k_start=$2"); shift 2 ;;
+        --k_end) EXTRA+=("clam.k_end=$2"); shift 2 ;;
+        --seed) EXTRA+=("clam.seed=$2"); shift 2 ;;
         --wandb) WANDB=1; shift ;;
         --no_wandb) WANDB=0; shift ;;
-        --wandb_project) WANDB_PROJECT="$2"; shift 2 ;;
+        --wandb_project) EXTRA+=("clam.wandb_project=$2"); shift 2 ;;
         --freeze_wsi_branch) FREEZE_WSI=1; shift ;;
         --no_freeze_wsi_branch) FREEZE_WSI=0; shift ;;
-        --tabular_hidden_dim) TABULAR_HIDDEN_DIM="$2"; shift 2 ;;
-        --tabular_num_layers) TABULAR_NUM_LAYERS="$2"; shift 2 ;;
-        --tabular_top_n_features) TABULAR_TOP_N_FEATURES="$2"; shift 2 ;;
-        --fusion_hidden_dim) FUSION_HIDDEN_DIM="$2"; shift 2 ;;
+        --tabular_hidden_dim) EXTRA+=("clam.tabular_hidden_dim=$2"); shift 2 ;;
+        --tabular_num_layers) EXTRA+=("clam.tabular_num_layers=$2"); shift 2 ;;
+        --tabular_top_n_features) EXTRA+=("clam.tabular_top_n_features=$2"); shift 2 ;;
+        --fusion_hidden_dim) EXTRA+=("clam.fusion_hidden_dim=$2"); shift 2 ;;
+        --dry-run|--dry_run) EXTRA+=(--dry-run); shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -96,67 +111,29 @@ if [[ -z "${PRETRAINED_WSI_CKPT}" ]]; then
     exit 2
 fi
 
+# The wrapper always validated this, and it is narrower than CLAM's own choice
+# list on purpose: the six operators are reachable through `dp-train fusion=…`.
 if [[ "${FUSION_MODE}" != "concat" && "${FUSION_MODE}" != "gated" ]]; then
     echo "--fusion_mode must be 'concat' or 'gated'." >&2
+    echo "  the other four operators: dp-train experiment=pam50_wsi_rna_gated fusion=${FUSION_MODE} …" >&2
     exit 2
 fi
 
-repo_path() {
-    local path="$1"
-    if [[ "${path}" = /* ]]; then
-        printf "%s" "${path}"
-    else
-        printf "%s/%s" "${REPO_ROOT}" "${path}"
-    fi
-}
+OVERRIDES=(
+    "experiment=pam50_wsi_rna_gated"
+    "fusion=${FUSION_MODE}"
+    # Inner double quotes are load-bearing: they make Hydra treat the value as a
+    # quoted string, so a `{fold}` placeholder survives the override grammar.
+    "clam.pretrained_wsi_ckpt=\"${PRETRAINED_WSI_CKPT}\""
+    "clam.wandb=$([[ "${WANDB}" == "1" ]] && echo true || echo false)"
+    "clam.freeze_wsi_branch=$([[ "${FREEZE_WSI}" == "1" ]] && echo true || echo false)"
+)
+OVERRIDES+=("${EXTRA[@]+"${EXTRA[@]}"}")
 
-WANDB_ARGS=()
-if [[ "${WANDB}" == "1" ]]; then
-    WANDB_ARGS+=(--wandb)
-fi
+echo "tools/train_pam50_multimodal.sh now runs:" >&2
+printf '    %s' "${DP_TRAIN[*]}" >&2
+printf " %q" "${OVERRIDES[@]}" >&2
+echo >&2
+echo >&2
 
-FREEZE_ARGS=()
-if [[ "${FREEZE_WSI}" == "1" ]]; then
-    FREEZE_ARGS+=(--freeze_wsi_branch)
-fi
-
-cd "${REPO_ROOT}/project/CLAM"
-
-python main.py \
-    --task                  tcga_brca_subtyping \
-    --data_root_dir         "$(repo_path "${DATA_ROOT_DIR}")" \
-    --embed_dim             1536 \
-    --subtyping \
-    --exp_code              "${EXP_CODE}" \
-    --results_dir           "$(repo_path "${RESULTS_DIR}")" \
-    --max_epochs            "${MAX_EPOCHS}" \
-    --k                     "${K}" \
-    --k_start               "${K_START}" \
-    --k_end                 "${K_END}" \
-    --early_stopping \
-    --patience              5 \
-    --weighted_sample \
-    --log_data \
-    --wandb_project         "${WANDB_PROJECT}" \
-    --wandb_tags            wsi rna "${FUSION_MODE}-fusion" \
-    --model_type            clam_mb \
-    --model_size            big \
-    --B                     4 \
-    --no_inst_cluster \
-    --bag_loss              ce \
-    --drop_out              0.5 \
-    --opt                   adam \
-    --lr                    0.0001 \
-    --reg                   0.0000025 \
-    --seed                  "${SEED}" \
-    --split_dir             tcga_brca_subtyping_100 \
-    --tabular_csv           "$(repo_path "${TABULAR_CSV}")" \
-    --tabular_case_id_col   case_id \
-    --tabular_hidden_dim    "${TABULAR_HIDDEN_DIM}" \
-    --tabular_num_layers    "${TABULAR_NUM_LAYERS}" \
-    --tabular_top_n_features "${TABULAR_TOP_N_FEATURES}" \
-    --fusion_mode           "${FUSION_MODE}" \
-    --fusion_hidden_dim     "${FUSION_HIDDEN_DIM}" \
-    --pretrained_wsi_ckpt   "$(repo_path "${PRETRAINED_WSI_CKPT}")" \
-    "${WANDB_ARGS[@]}" \
-    "${FREEZE_ARGS[@]}"
+exec "${DP_TRAIN[@]}" "${OVERRIDES[@]}"

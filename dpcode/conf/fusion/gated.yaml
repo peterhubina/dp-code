@@ -1,0 +1,16 @@
+# @package _global_
+# Gated fusion: a learned convex combination of the two branch representations.
+#
+# Carries no extra flags. `--fusion_hidden_dim` sizes the gate and belongs to the
+# experiment, not here — the CNV ladder runs it at 32 and the ER capacity control
+# at 96, and both are the same operator.
+#
+# Context, not configuration: gated fusion appears in exactly two published PAM50
+# papers and loses in both, and the ablation on this project's own WSI+RNA arm
+# showed the gate deciding on the tabular branch alone
+# (`tools/diagnostics/gate_probe.py`).
+fusion:
+  name: gated
+
+clam:
+  fusion_mode: gated

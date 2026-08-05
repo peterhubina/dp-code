@@ -1,0 +1,42 @@
+# @package _global_
+# residual — NOT RUNNABLE. Selecting it fails at composition, on purpose.
+#
+# WHY THIS FILE REFUSES TO COMPOSE
+#
+# `--fusion_mode residual` requires `--pretrained_rna_ckpt` (main.py:222-223), a
+# checkpoint of a matched tabular-only model. Nothing in this repository can
+# produce one: the only tabular-only trainer, `tools/train_pam50_tabular.sh`,
+# passes `--model_type tabular_mlp`, which `main.py`'s choice list
+# (`clam_sb|clam_mb|mil`, main.py:148) rejects at argparse. So the operator is
+# reachable in the code and unreachable in practice. This is a KNOWN GAP recorded
+# in CLAUDE.md; fixing it is explicitly out of scope for the reproducibility
+# refactor, and pretending it works would be worse than saying so.
+#
+# WHY IT REFUSES *HERE* RATHER THAN LATER
+#
+# `dp-train -m 'fusion=glob(*)'` is Hydra's own taught idiom for "every option in
+# this group", and it will find this file. If the file merely composed, each such
+# sweep would create a run directory, write a config snapshot and a metadata file,
+# dispatch CLAM, and only then die inside the subprocess on `parser.error`. A
+# composition failure happens before any of that, so nothing is created and no
+# half-written run directory is left behind.
+#
+# HOW IT REFUSES
+#
+# The key below is not in `dpcode.schema.RootConf`, and the composed config is a
+# struct, so Hydra aborts the merge with the key name as the message:
+#
+#   In 'fusion/residual': ConfigKeyError raised while composing config:
+#   Key 'residual_fusion_is_unavailable__…__see_known_gaps_in_CLAUDE_md'
+#   not in 'RootConf'
+#
+# Deleting the key does NOT make residual fusion work — it moves the failure to
+# `parser.error('--fusion_mode residual requires --pretrained_rna_ckpt')` inside
+# CLAM, after a run directory has been created.
+residual_fusion_is_unavailable__no_trainer_produces_a_pretrained_rna_ckpt__see_known_gaps_in_CLAUDE_md: true
+
+fusion:
+  name: residual
+
+clam:
+  fusion_mode: residual

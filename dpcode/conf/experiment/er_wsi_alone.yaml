@@ -1,0 +1,65 @@
+# @package _global_
+# ER binary prediction, arm 1 of 3: the WSI-alone baseline.
+#
+#   replaces : bash tools/train_er_ablation.sh wsi
+#   run with : dp-train experiment=er_wsi_alone
+#   writes   : ${paths.results_root}/er/er_wsi_alone_s1/
+#
+# RUN THIS ARM FIRST. Both fusion arms (`er_wsi_rna_gated`,
+# `er_wsi_clinpath_gated`) load and freeze its per-fold checkpoints
+# `er_wsi_alone_s${clam.seed}/s_{fold}_checkpoint.pt`, so the ordering is a data
+# dependency, not a convention.
+#
+# The ER thread is COMPLETE and dormant (docs/er-prediction-results.md,
+# docs/er-external-validation-results.md). Seed 1 is on disk; seeds 2 and 3 —
+# what `tools/train_er_multiseed.sh` exists to produce — were never run.
+# Repeating a seed is `dp-train experiment=er_wsi_alone clam.seed=2`, and the
+# checkpoint path in the fusion arms follows `clam.seed` automatically.
+#
+# Splits are `tcga_brca_er_100`, ten SITE-HOLDOUT folds — not the subtyping
+# splits. `clam/base.yaml` derives the name from `clam.task`, so setting
+# `task: tcga_brca_er` is what selects them.
+#
+# `inst_loss: svm` with instance clustering left ON, and no `bag_weight`
+# (CLAM's 0.7, unlike the PAM50 baseline's 0.5533776374353542). W&B: project
+# `er-brca-ablation`, always on, exactly as the wrapper had it.
+
+defaults:
+  - override /fusion: none
+
+run:
+  name: er_wsi_alone
+
+clam:
+  # data and task
+  task: tcga_brca_er
+  embed_dim: 1536
+  results_dir: ${paths.results_root}/er
+
+  # identity
+  exp_code: er_wsi_alone
+
+  # optimisation
+  max_epochs: 50
+  k: 10
+  seed: 1
+  early_stopping: true
+  patience: 5
+  weighted_sample: true
+  log_data: true
+  drop_out: 0.5
+  opt: adam
+  lr: 1e-4
+  reg: 2.5e-6
+
+  # model
+  model_type: clam_mb
+  model_size: big
+  B: 4
+  bag_loss: ce
+  inst_loss: svm
+
+  # tracking (CLAM's own flags)
+  wandb: true
+  wandb_project: er-brca-ablation
+  wandb_tags: [er, wsi-alone, clam_mb]

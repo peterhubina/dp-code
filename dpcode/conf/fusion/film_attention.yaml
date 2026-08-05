@@ -1,0 +1,25 @@
+# @package _global_
+# FiLM-conditioned attention: the tabular vector predicts a low-rank affine
+# transform of the ATTENTION NETWORK'S INPUT, so the second modality re-ranks
+# patches instead of being appended after pooling. This is the operator the CNV
+# ladder exists to test.
+#
+# THE TWO VALUES BELOW ARE THE EXPERIMENT'S, NOT CLAM'S.
+# CLAM's own defaults are `--film_rank 32` and `--modality_dropout 0.0`
+# (main.py:159,163). The CNV ladder runs rank 16 — chosen for a 39-dim modality —
+# and modality dropout 0.2. Leaving them to fall back on CLAM's defaults would
+# silently change the experiment this repository exists to run, so they are
+# written here rather than inherited.
+#
+# Other arms deliberately differ and set these themselves, which works because the
+# `experiment` group merges after `fusion` (see dpcode/conf/train.yaml):
+#   experiment=er_wsi_rna_film   film_rank 64, modality_dropout 0.25
+#   the ER `delta` ablation      film_rank 0  (0 disables the attention
+#                                conditioning, leaving additive-logit fusion)
+fusion:
+  name: film_attention
+
+clam:
+  fusion_mode: film_attention
+  film_rank: 16
+  modality_dropout: 0.2

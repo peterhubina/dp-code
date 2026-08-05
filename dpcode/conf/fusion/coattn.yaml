@@ -1,0 +1,25 @@
+# @package _global_
+# MCAT-style co-attention: tabular TOKENS query the patch tokens.
+#
+# CLAM refuses to run this operator without a token grouping
+# (main.py:224-225: `--fusion_mode coattn requires --tabular_group_spec`), so the
+# grouping is part of the operator and is set here.
+#
+# The default is the CNV grouping: 22 chromosome tokens over the 39 arms, written
+# by `tools/make_cnv_tabular.py`. The alternative CLAM accepts,
+# `--tabular_group_spec prefix`, would give 39 biologically empty singleton tokens
+# for this feature set, which is why the file exists at all.
+#
+# Other second modalities need their own grouping and set it themselves (the
+# `experiment` group merges after `fusion`):
+#   RNA         ${paths.repo_root}/project/MCAT/dataset_csv/signatures.csv
+#   clinicopath the literal string `prefix` (its one-hot blocks share prefixes)
+#
+# Uses `nn.MultiheadAttention` (not bitwise deterministic on CUDA), and
+# `--log_heatmaps` is rejected with this operator (main.py:226-229).
+fusion:
+  name: coattn
+
+clam:
+  fusion_mode: coattn
+  tabular_group_spec: ${paths.cnv_tabular_dir}/chromosome_groups.csv

@@ -1,0 +1,77 @@
+# @package _global_
+# The frozen WSI-only PAM50 baseline — the model behind every "WSI only" number
+# in docs/cnv-wsi-fusion-external-validation.md, and the checkpoint the CNV ladder
+# warm-starts from.
+#
+#   replaces : bash tools/train_pam50_final.sh
+#   run with : dp-train experiment=pam50_wsi_final
+#   writes   : ${paths.results_root}/pam50_final_s1/
+#   cost     : 10 folds on one 3090; the existing run is already on disk
+#
+# EVERY DIGIT BELOW IS LOAD-BEARING. This is a sweep-selected configuration
+# ("baseline-best", selected by val_auc) that has been frozen since 2026-07-17;
+# `lr`, `reg` and `bag_weight` are recorded at full precision because that is what
+# ran. CLAUDE.md quotes them rounded (1.008e-4, 2.446e-6, 0.553); the values here
+# and in the wrapper are the authority, and
+# `.scratch/results/pam50_final_s1/experiment_pam50_final.txt` confirms them.
+#
+# Three differences from the fusion experiments are DELIBERATE and must not be
+# "harmonised" (they are three genuinely different configurations):
+#   * instance clustering is ON — `no_inst_cluster` is left false here, while the
+#     ladder and the WSI+RNA arm both disable it;
+#   * `inst_loss: svm` with `bag_weight: 0.5533776374353542`, which no fusion
+#     experiment passes (they inherit CLAM's 0.7, inert on the multimodal path);
+#   * full-precision `lr`/`reg` rather than the ladder's rounded 1e-4 / 2.5e-6.
+#
+# W&B: this run logs to W&B through CLAM's own `--wandb`, exactly as the wrapper
+# did. The `tracking` config group governs dpcode's own entry points and has no
+# effect here. To train without W&B: `dp-train experiment=pam50_wsi_final
+# clam.wandb=false`.
+#
+# `--inst_loss svm` imports `topk.svm` (the smooth-topk git pin) once training
+# starts; `dp-config validate` checks it is importable.
+
+defaults:
+  - override /fusion: none
+
+run:
+  name: pam50_wsi_final
+
+clam:
+  # data and task
+  task: tcga_brca_subtyping
+  subtyping: true
+  embed_dim: 1536 # UNI2-h features are 1536-dim
+  # data_root_dir, results_dir and split_dir come from clam/base.yaml, which
+  # spells them against `paths`: tcga_embeddings, results_root and
+  # splits_root/tcga_brca_subtyping_100 — the same three locations the wrapper
+  # passed as ../../-relative paths from inside project/CLAM.
+
+  # identity
+  exp_code: pam50_final
+
+  # optimisation
+  max_epochs: 50
+  k: 10
+  seed: 1
+  early_stopping: true
+  patience: 5
+  weighted_sample: true
+  log_data: true
+  drop_out: 0.5
+  opt: adam
+  lr: 0.0001007597588073064
+  reg: 0.0000024456514744717547
+
+  # model
+  model_type: clam_mb
+  model_size: big
+  B: 4
+  bag_loss: ce
+  bag_weight: 0.5533776374353542
+  inst_loss: svm
+
+  # tracking (CLAM's own flags)
+  wandb: true
+  wandb_project: clam-brca-subtyping-cv
+  wandb_tags: [full-cv, best-config]

@@ -1,0 +1,85 @@
+# @package _global_
+# ER binary prediction, novel-fusion chapter: FiLM-conditioned attention + RNA.
+#
+#   replaces : bash tools/train_er_novel_fusion.sh film_rna   (its TEST 1/8)
+#   run with : dp-train experiment=er_wsi_rna_film
+#   writes   : ${paths.results_root}/er/er_wsi_rna_film_s1/
+#   needs    : experiment=er_wsi_alone at the same clam.seed, already trained
+#
+# COVERAGE, STATED PLAINLY. `tools/train_er_novel_fusion.sh` has eleven
+# invocations: three validation-only `select` runs at film_rank 16/32/64 and eight
+# test arms. This config is the first test arm — the chapter's primary claim.
+# The other ten are NOT ported; addendum A13 narrows the ER thread to each
+# wrapper's default invocation, and the thread is complete with all eleven runs
+# already on disk. `tools/train_er_novel_fusion.sh` is the record of what they
+# were, and `tests/legacy_wrappers/tools/` holds it frozen.
+#
+# `film_rank: 64` is the ONLY tuned hyperparameter in that chapter, selected on
+# validation folds (RNA only) on 2026-07-28: 0.9582 at rank 64 vs 0.9572 at 32 and
+# 0.9546 at 16. It is then applied to the other modality unchanged, because the
+# chapter's claim is that one unmodified mechanism serves both.
+# `modality_dropout: 0.25` was fixed a priori, not tuned.
+#
+# BOTH VALUES OVERRIDE `fusion/film_attention.yaml`, which carries the CNV
+# ladder's 16 / 0.2. That works because the `experiment` group merges after
+# `fusion` (dpcode/conf/train.yaml). If either is ever removed from this file it
+# silently becomes a different experiment.
+#
+# `fusion_hidden_dim` is deliberately ABSENT: the wrapper does not pass it for the
+# film and delta arms, so they run at CLAM's default 128, while the gated capacity
+# control and the co-attention arms pass 96 and 64. That asymmetry is real.
+
+defaults:
+  - override /fusion: film_attention
+
+run:
+  name: er_wsi_rna_film
+
+clam:
+  # data and task
+  task: tcga_brca_er
+  embed_dim: 1536
+  results_dir: ${paths.results_root}/er
+
+  # identity
+  exp_code: er_wsi_rna_film
+
+  # optimisation
+  max_epochs: 50
+  k: 10
+  seed: 1
+  early_stopping: true
+  patience: 5
+  weighted_sample: true
+  log_data: true
+  drop_out: 0.5
+  opt: adam
+  lr: 1e-4
+  reg: 2.5e-6
+
+  # model
+  model_type: clam_mb
+  model_size: big
+  B: 4
+  bag_loss: ce
+  no_inst_cluster: true
+
+  # the mechanism, at the selected rank (not the ladder's 16 / 0.2)
+  film_rank: 64
+  modality_dropout: 0.25
+
+  # second modality: the ER RNA table, top-10,000 features by training-fold variance
+  tabular_csv: ${paths.rna_legacy_dir}/tcga_brca_er_rna_clam.csv.gz
+  tabular_case_id_col: case_id
+  tabular_hidden_dim: 256
+  tabular_num_layers: 2
+  tabular_top_n_features: 10000
+
+  # frozen WSI branch, from the WSI-alone arm at this seed
+  pretrained_wsi_ckpt: ${paths.results_root}/er/er_wsi_alone_s${clam.seed}/s_{fold}_checkpoint.pt
+  freeze_wsi_branch: true
+
+  # tracking (CLAM's own flags)
+  wandb: true
+  wandb_project: er-brca-ablation
+  wandb_tags: [er, novel-fusion, wsi-rna, film_attention, frozen]

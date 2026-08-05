@@ -1,0 +1,12 @@
+# @package _global_
+# Concatenate the pooled WSI embedding with the tabular embedding, then a head.
+# The simplest operator on the ladder; it carries no extra flags of its own.
+#
+# `--tabular_csv` is required by CLAM whenever `--fusion_mode` is set
+# (main.py:216-217) and is supplied by the experiment, not here: an operator is
+# independent of which second modality it fuses.
+fusion:
+  name: concat
+
+clam:
+  fusion_mode: concat

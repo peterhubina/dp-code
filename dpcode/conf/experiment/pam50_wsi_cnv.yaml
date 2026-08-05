@@ -1,0 +1,97 @@
+# @package _global_
+# The fusion-operator ladder: H&E primary, arm-level CNV as the second modality,
+# one run per operator on identical splits.
+#
+#   replaces : bash tools/run_cnv_fusion_ladder.sh
+#   run with : dp-train experiment=pam50_wsi_cnv fusion=film_attention
+#   the whole ladder:
+#              dp-train -m experiment=pam50_wsi_cnv \
+#                  fusion=concat,gated,cross_attention,film_attention,coattn
+#   writes   : ${paths.results_root}/pam50_wsi_cnv_<operator>_s1/
+#
+# ALL FIVE ARMS ARE ALREADY ON DISK (run 2026-08-05, ~2h38m of GPU time, in a
+# gitignored tree with no backup). `dp-train` refuses to write into a run
+# directory that already holds `summary.csv` or an `s_*_checkpoint.pt`; overriding
+# that with `run.overwrite=true` destroys them.
+#
+# The `fusion` group is MANDATORY here — there is no default operator, because a
+# missing one would compose a WSI-only run named `pam50_wsi_cnv_none_s1` that
+# looks like a ladder arm and is not one.
+#
+# WHY THIS DIFFERS FROM experiment=pam50_wsi_final, DELIBERATELY:
+#   * rounded `lr: 0.0001` / `reg: 0.0000025`, not the baseline's full-precision
+#     sweep values;
+#   * `no_inst_cluster: true`, and neither `bag_weight` nor `inst_loss` is set, so
+#     they stay at CLAM's 0.7 / null. All three are INERT on the multimodal path
+#     (`utils/core_utils.py:434` routes to `train_loop`), but they are what the
+#     wrapper passed and they land in `experiment_<exp_code>.txt`, so they are
+#     reproduced exactly rather than tidied away.
+#   So the ladder's optimiser configuration differs from that of the checkpoint it
+#   warm-starts from. That divergence is real, it is in the record, and it is not
+#   to be "fixed".
+#
+# WARM START, NOT FREEZE. `pretrained_wsi_ckpt` initialises the WSI branch from
+# the WSI-only baseline and `freeze_wsi_branch` is left false, so the branch is
+# fine-tuned: fusion has to improve on that model rather than rediscover it. The
+# `{fold}` placeholder is expanded by CLAM per fold, not by the shell and not by
+# OmegaConf. On the command line a value containing `{` must be quoted, e.g.
+#   dp-train … 'clam.pretrained_wsi_ckpt="/abs/s_{fold}_checkpoint.pt"'
+# — unquoted, Hydra's override grammar rejects the bare `{`.
+#
+# W&B is OFF, as in the wrapper. The wrapper only passed `--wandb_project` /
+# `--wandb_tags` when `--wandb` was given, so they are left at CLAM's own defaults
+# here; turning logging on means passing all three:
+#   dp-train experiment=pam50_wsi_cnv fusion=concat clam.wandb=true \
+#       clam.wandb_project=clam-brca-subtyping-cv \
+#       'clam.wandb_tags=[wsi,cnv,concat-fusion]'
+#
+# Prerequisite: `dp-analysis make_cnv_tabular` (or `python tools/make_cnv_tabular.py`)
+# has written the two files under ${paths.cnv_tabular_dir}. `dp-train` checks they
+# exist before it creates anything.
+
+defaults:
+  - override /fusion: ???
+
+run:
+  name: pam50_wsi_cnv_${fusion.name}
+
+clam:
+  # data and task
+  task: tcga_brca_subtyping
+  subtyping: true
+  embed_dim: 1536
+
+  # identity — one run directory per operator
+  exp_code: pam50_wsi_cnv_${fusion.name}
+
+  # optimisation
+  max_epochs: 50
+  k: 10
+  seed: 1
+  early_stopping: true
+  patience: 5
+  weighted_sample: true
+  log_data: true
+  drop_out: 0.5
+  opt: adam
+  lr: 0.0001
+  reg: 0.0000025
+
+  # model
+  model_type: clam_mb
+  model_size: big
+  B: 4
+  bag_loss: ce
+  no_inst_cluster: true
+
+  # second modality: 39 chromosome arms, sized for a 39-dim input (the RNA arm
+  # uses 256 / 10000 for 19,944 genes)
+  tabular_csv: ${paths.cnv_tabular_dir}/TCGA_BRCA_CNV_arm_4class_clam.csv
+  tabular_case_id_col: case_id
+  tabular_hidden_dim: 64
+  tabular_num_layers: 2
+  tabular_top_n_features: 0
+  fusion_hidden_dim: 32
+
+  # H&E stays primary: warm start from the WSI-only baseline, branch not frozen
+  pretrained_wsi_ckpt: ${paths.results_root}/pam50_final_s1/s_{fold}_checkpoint.pt

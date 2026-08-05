@@ -1,0 +1,16 @@
+# @package _global_
+# No fusion: a WSI-only CLAM run.
+#
+# `--fusion_mode`'s choice list is `concat|gated|residual|cross_attention|
+# film_attention|coattn` (main.py:155-156). There is NO `none` value, so the
+# unimodal case must OMIT the flag rather than pass a word for it. That is what
+# `fusion_mode: null` does — `dpcode.clam_args.render_argv` skips every `None`
+# scalar, so no `--fusion_mode` token is emitted at all.
+#
+# `fusion.name` is a label, not a flag: it exists so a run directory, a W&B run
+# and a metrics table can name the arm without re-deriving it from argv.
+fusion:
+  name: none
+
+clam:
+  fusion_mode: null
