@@ -1,0 +1,93 @@
+# Citation metadata for this repository.
+#
+# INCOMPLETE ON PURPOSE. Every field below is either verifiable from the
+# repository itself (git history, the remote, pyproject.toml) or marked as a
+# placeholder for the author. Nothing has been inferred: the thesis title, the
+# author's full legal name, the institution, the supervisor and the ORCID appear
+# NOWHERE in this repository, so none of them is written here.
+#
+# Before this file is used:
+#   1. fill in the five placeholders below (search for "AUTHOR TO SUPPLY");
+#   2. settle the licence question in the note at the bottom;
+#   3. validate it — e.g. `cffconvert --validate` (pip install cffconvert), or
+#      simply push and let GitHub's "Cite this repository" widget parse it. This
+#      file was written without a validator available in the environment, and the
+#      author-name keys in particular depend on how the placeholders are filled.
+
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite it using the metadata below. Please also
+  cite the upstream work it builds on: CLAM (Lu et al.), the UNI/UNI2-h encoder
+  (Chen et al.), TCGA-BRCA, CPTAC-BRCA and cBioPortal.
+type: software
+
+title: >-
+  dp-code — PAM50 molecular-subtype classification from H&E whole-slide images
+  fused with arm-level copy-number variation (TCGA-BRCA to CPTAC-BRCA)
+
+abstract: >-
+  Four-class PAM50 subtype classification (Luminal A, Luminal B, Basal-like,
+  HER2-enriched) from H&E whole-slide images, trained on TCGA-BRCA with 10-fold
+  patient-level cross-validation and externally validated on CPTAC-BRCA. The
+  imaging arm is UNI2-h patch features with CLAM-MB attention-based multiple
+  instance learning; the second modality is 39 chromosome-arm copy-number
+  features. The repository reports the copy-number-alone arm and the untrained
+  equal-weight probability mean alongside every fusion result, and finds that no
+  trained fusion operator beats that mean.
+
+authors:
+  # Verified: the sole author of all 76 commits, 2025-12-08 to 2026-08-05.
+  # `alias` is the git author name; it is not a legal name.
+  #
+  # AUTHOR TO SUPPLY: replace `alias` with `given-names` / `family-names`, and
+  # add `affiliation` and `orcid` (`https://orcid.org/0000-0000-0000-0000`).
+  # Neither the legal name, the institution nor an ORCID is recorded anywhere in
+  # this repository, so none of them is guessed here.
+  - alias: peterhubina
+    email: peter.hubina1@gmail.com
+
+repository-code: https://github.com/peterhubina/dp-code
+version: 0.1.0
+
+# Date of the most recent commit at the time this file was written. Update it, or
+# drop it in favour of a tagged release date.
+date-released: '2026-08-05'
+
+keywords:
+  - computational pathology
+  - breast cancer
+  - PAM50
+  - molecular subtyping
+  - multiple instance learning
+  - multimodal fusion
+  - copy-number variation
+  - external validation
+  - TCGA-BRCA
+  - CPTAC-BRCA
+
+# ---------------------------------------------------------------------------
+# NO `license:` FIELD, AND THAT IS DELIBERATE.
+#
+# The licensing status of this repository is unresolved, and resolving it is an
+# author-and-supervisor decision, not a documentation task:
+#
+#   * the root `LICENCE` is the unmodified Apache-2.0 text with its
+#     `Copyright [yyyy] [name of copyright owner]` placeholder never filled;
+#   * the only thing that ever filled that role was a line in the old root
+#     `README.md`, which named the authors of the HistologyHSI-BC *dataset* --
+#     so as published, the licence attributed this repository's code to someone
+#     else. That notice now lives at `docs/parked-cohorts/histology-hsi-bc.md`,
+#     where it belongs, which removes the confusion but not the question;
+#   * `project/CLAM` and `project/MCAT` are GPLv3, and CLAM is modified in place
+#     (`models/model_multimodal.py`, `multimodal_dataset.py`, the `--fusion_mode`
+#     machinery). That makes the combined work a GPLv3 derivative, which is
+#     inconsistent with distributing the whole repository under Apache-2.0. The
+#     `topk` dependency is GPL as well.
+#
+# Declaring a `license:` here would assert a resolution nobody has made. Until
+# the author decides, do not assume either licence applies to the combined work.
+#
+# AUTHOR TO SUPPLY: the licence decision, the filled copyright line in `LICENCE`,
+# and (if the thesis is deposited) `doi:`, `preferred-citation:` and the
+# institution/supervisor metadata for a `type: thesis` citation.
+# ---------------------------------------------------------------------------

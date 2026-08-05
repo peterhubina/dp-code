@@ -1,150 +1,241 @@
-# Histological Hyperspectral Breast Cancer Recurrence Database (HistologyHSI-BC Recurrence)
-Metastasis occurs in nearly 1 out of 3 breast cancer (BC) patients and significantly reduces survival rates, particularly in cases of distant metastases. As most distant metastases develop after diagnosis (i.e., recurrence) and remain incurable, there is a critical need for prognostic biomarkers to assess recurrence risk. Multimodal data analysis has emerged as a promising approach to integrate diverse information, offering a more comprehensive perspective. This study introduces the Histology HSI-BC (hyperspectral imaging - breast cancer) Recurrence Database, the first publicly accessible multimodal database designed to advance BC distant recurrence prediction. This database provides a promising resource for studying BC recurrence prediction and personalized treatment strategies by integrating the aforementioned multimodal data.
+# dp-code — PAM50 subtypes from H&E slides fused with arm-level copy number
 
-## Dataset 
+Four-class PAM50 molecular-subtype classification (LumA / LumB / Basal / Her2), **trained on
+TCGA-BRCA and externally validated on CPTAC-BRCA**, fusing H&E whole-slide images with arm-level
+copy-number variation.
 
-The database comprises 47 histopathological whole-slide images (WSI), 677 hyperspectral (HS) images, and clinical and demographic data from 47 BC patients, of whom 22 (47%) experienced distant recurrence over a 12-year follow-up. Histopathological slides were digitized using a whole-slide scanner and annotated by expert pathologists, while HS images were acquired with an HS camera coupled to a bright-field microscope.
+- **Primary modality — H&E WSI.** UNI2-h patch features (1536-dim) → CLAM-MB multiple-instance
+  learning, 10-fold cross-validation on TCGA-BRCA.
+- **Second modality — arm-level CNV.** 39 chromosome arms, each the median gene-level log2 over that
+  arm. Chosen because shallow whole-genome sequencing resolves changes at arm scale, so the assay is
+  cheap and clinically reachable — and because copy number is a different assay from the one the
+  PAM50 labels are computed from, so unlike RNA it cannot leak the target.
+- **External cohort — CPTAC-BRCA**, 114 cases / 378 slides. Nothing is ever refit, tuned, calibrated
+  or thresholded on CPTAC; fusion rules are fixed on TCGA before the external set is scored.
 
-More information about the dataset can be found on:
+Master's-thesis codebase. It is research code that has been made reproducible, not a library.
 
-## Usage
+## The headline result
 
-This repository contains the following scripts:
-* `main.ipynb`: provide a basic example of how to load and perform some basic preprocessing to WSI (.mrxs) and HS (ENVI format) data using Python.
-* `overlay_tissue_areas.ipynb`: provide a tutorial on manipulating annotations in GeoJSON format to overlay tissue compartments on a WSI using Python.
-## Dependencies
+TCGA-trained, CPTAC external, n = 114. Full write-up, every control and every caveat:
+[`docs/cnv-wsi-fusion-external-validation.md`](docs/cnv-wsi-fusion-external-validation.md).
 
-Python script requires:
-   - Openslide. Python module for reading whole-slide image formats. https://openslide.org/  
-   - Spectral Python (SPy). Python module for hyperspectral image processing. https://www.spectralpython.net
-   - Harris, C.R., Millman, K.J., van der Walt, S.J. et al. Array programming with NumPy. Nature 585, 357–362 (2020). https://doi.org/10.1038/s41586-020-2649-2
-   - J. D. Hunter, "Matplotlib: A 2D Graphics Environment," in Computing in Science & Engineering, vol. 9, no. 3, pp. 90-95, May-June 2007, doi: 10.1109/MCSE.2007.55.
-   - Virtanen, P., Gommers, R., Oliphant, T.E. et al. SciPy 1.0: fundamental algorithms for scientific computing in Python. Nat Methods 17, 261–272 (2020). https://doi.org/10.1038/s41592-019-0686-2
+| Model | macro AUROC [95% CI] | balanced acc | Her2 recall |
+|---|---|---|---|
+| WSI only (CLAM-MB + UNI2-h) | 0.847 [0.791, 0.895] | 0.513 | 0/14 |
+| **CNV only (39 arms, logistic regression)** | **0.888** [0.835, 0.933] | **0.716** | **12/14** |
+| Fusion — equal-weight probability mean | **0.909** [0.858, 0.948] | 0.646 | 6/14 |
+| Fusion — mean of prior-balanced WSI + CNV *(post hoc control)* | **0.912** | **0.740** | 10/14 |
 
+Two things this table is required to say out loud, because leaving either out is the selective
+reporting this project's own literature survey criticises:
 
-## License
+1. **The CNV-alone arm is always reported next to fusion.** Fusion's edge over CNV alone is marginal
+   — ΔAUROC +0.024 with a CI lower bound of exactly +0.000, and no significant balanced-accuracy
+   difference at n = 114.
+2. **The baseline to beat is the equal-weight mean, not the WSI-only model.** Five trained fusion
+   operators (`concat`, `gated`, `cross_attention`, `film_attention`, `coattn`) were run as a ladder
+   on identical splits; every one of them loses to the untrained average, and ensembling all five
+   still loses to two independently trained unimodal models. The mechanism is error correlation:
+   φ = 0.656 among the jointly trained operators against 0.193 between the two unimodal arms.
 
-Copyright 2025 Laura Quintana-Quintana, Esther Sauras-Colón, Javier Santana-Nunez, Alessio Fiorin
+Recompute these rows (≈45 s, CPU only, no slide touched) with
 
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
+```bash
+dp-analysis cnv_wsi_fusion                       # TCGA -> CPTAC external
+dp-analysis cnv_wsi_fusion analysis.internal=true  # adds the TCGA-only head-to-head
+```
 
-       http://www.apache.org/licenses/LICENSE-2.0
+…once you have four small input files. Getting them is the subject of
+**[REPRODUCING.md](REPRODUCING.md)**, and it is the first thing to read.
 
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
+## Install
 
-## Commands
+Python **3.10 or 3.11** (`torch==2.0.1` has no 3.12 wheels), an NVIDIA driver new enough for CUDA
+11.7 if you intend to train, and `git` on the box (one dependency, `topk`, is a git commit pin with
+no PyPI fallback and is required by the frozen WSI baseline's `--inst_loss svm`).
 
-Patching:
+```bash
+git clone https://github.com/peterhubina/dp-code.git
+cd dp-code
+make install          # == pip install -e '.[dev]'
+```
 
-python tools/patch_wsi.py batch --wsi_dir ".datasets/PKG - HistologyHSI-BC-Recurrence/01_01_Histological_Images" --geojson_dir ".datasets/PKG - HistologyHSI-BC-Recurrence/01_02_Tissue_Annotations" --out_dir .datasets/wsi_patches --patch_size 224 --level 0 --overlap 0.0 --min_tissue 0.5
+Editable is not a preference. A non-editable `pip install .` copies `project/` and `tools/` into
+site-packages **without** the data directories they reach by relative path
+(`project/CLAM/dataset_csv/`, `project/CLAM/splits/`, `tools/data/`), so the copies import and then
+read the wrong files, or none.
 
+Check the install before downloading anything:
 
- Step 1: Extract Features (one-time)
+```bash
+dp-config validate    # paths, tracked inputs, CLAM-schema drift, the topk dependency
+make smoke            # synthetic end-to-end run: no real data, no GPU, minutes
+```
 
-python tools/extract_features.py --patch_root /mnt/datasets/wsi_patches --output mnt/datasets/uni2h_insitu_vs_infiltrant.pt --assets_dir .scratch/checkpoints --batch_size 256 --num_workers 8
+`dp-config validate` on a fresh clone prints a `not acquired :` line listing the data trees you do
+not have yet. That is expected, not a failure.
 
-  python tools/extract_features.py \
-      --patch_root .datasets/patches \
-      --output .scratch/datasets/uni2h_insitu_vs_infiltrant.pt \
-      --assets_dir .scratch/checkpoints \
-      --batch_size 64 \
-      --num_workers 4
+**Docker is not a supported route.** `docker/` targets one institution's cluster: the base image's
+availability is unverified, `docker/run.sh` bind-mounts host paths that will not exist on your
+machine, and it requires a positional GPU argument. Use the pip install.
 
-  This scans all slide directories under .datasets/patches/, loads UNI2-h, and extracts 1536-dim features. Output .pt contains:
-  - embeddings: [N, 1536] tensor
-  - labels: [N] tensor (0 = in situ, 1 = infiltrant)
-  - slide_ids: list of slide IDs (for patient-level splitting)
-  - label_map: class names
+## Entry points
 
-  Expected output for slide 25 alone: ~8,635 samples (864 in situ, 7,771 infiltrant)
+Six console scripts, all runnable **from any working directory** after `pip install -e .`. Every
+path and every settable parameter comes from the Hydra config tree in `dpcode/conf/`; nothing is
+hard-coded and nothing is relative to where you happen to stand.
 
-  ---
-  Step 2: Train MLP Classifier
+| command | what it does | example |
+|---|---|---|
+| `dp-train` | composes a CLAM training run and dispatches `project/CLAM/main.py` | `dp-train experiment=pam50_wsi_final` |
+| `dp-evaluate` | scores a trained WSI + tabular fusion checkpoint directory | `dp-evaluate --dry-run` |
+| `dp-analysis` | the CNV arm, the fusion analyses and the controls (CPU, ~1 MB of inputs) | `dp-analysis cnv_wsi_fusion` |
+| `dp-data` | acquisition: features, CNV, labels, and the reproduction bundle | `dp-data cnv --dry-run` |
+| `dp-cptac` | the CPTAC external-validation pipeline, phases 0–4 | `dp-cptac --dry-run phase=all` |
+| `dp-config` | inspect, validate and document the configuration | `dp-config validate` |
 
-  python tools/train_classifier.py --name insitu_vs_infiltrant --ver v1 --features_path mnt/datasets/uni2h_insitu_vs_infiltrant.pt --batch_size 256 --max_epochs 50 --learning_rate 0.001 --hidden_dim 256 --dropout 0.3 --val_split 0.2
+Worked examples. The first block writes nothing at all — `--help` and `--dry-run` are the way to see
+what a command would do before it does it:
 
-  What this does:
-  - Loads cached features from Step 1
-  - Patient-level split: all patches from each slide stay together (prevents spatial leakage)
-  - Computes class weights: infiltrant patches are downweighted to balance training
-  - Trains for 50 epochs with Adam + weighted CrossEntropyLoss
-  - Tracks: loss_train, loss_val, bacc_train, bacc_val
-  - Saves checkpoints, CSV metrics, and PDF report
+```bash
+dp-train --help                                   # experiments and operators, no config composed
+dp-train --dry-run experiment=pam50_wsi_final     # the exact CLAM command, nothing written
+dp-cptac --dry-run phase=all                      # every phase's command, in order
+dp-data cnv --dry-run                             # the acquisition command, nothing fetched
+dp-analysis list                                  # the five analyses, one line each
+```
 
-  Output directory: .scratch/experiments/insitu_vs_infiltrant/v1/
-  - config.yaml: training parameters
-  - training.csv: metrics per epoch
-  - report.pdf: loss/accuracy plots
-  - checkpoints/: model weights
+The second block does real work — CPU-only and cheap, except the last line, which is a 10-fold
+training run:
 
-  ---
-  Quick Test (Slide 25 only)
+```bash
+dp-config show                                    # the composed config, resolved for this machine
+dp-config reference -o docs/config-reference.md   # regenerate the config reference (writes a file)
+dp-analysis cnv_controls                          # every control number, next to its published value
+dp-analysis compare_fusion_ladder                 # the five ladder arms vs the probability mean
+dp-train -m experiment=pam50_wsi_cnv fusion=concat,gated,cross_attention,film_attention,coattn
+```
 
-  # Extract features from slide 25
-  python tools/extract_features.py \
-      --patch_root .datasets/patches \
-      --output .scratch/datasets/test_features.pt \
-      --batch_size 32
+Three things that will trip you up otherwise:
 
-  # Train on those features
-python tools/train_classifier.py --features_path .datasets/embeddings/uni2h_insitu_vs_infiltrant.pt --max_epochs 10 --name test_clf --ver v1
+- **`dp-train`'s primary config is `train`, not `config`** — it is `config.yaml` plus the `fusion`
+  and `experiment` groups. Hydra flags that name a config (`--cfg job`, `--help experiment=…`) work
+  against `train`.
+- **A value containing `{fold}` must be quoted.** Hydra's override grammar rejects a bare `{`:
+  `dp-train … 'clam.pretrained_wsi_ckpt="/abs/path/s_{fold}_checkpoint.pt"'`.
+- **`+key=value` overrides are refused** (`run.allow_config_surgery=true` to permit). Hydra suggests
+  `+` when you typo a key; accepting it would silently add a key nothing reads.
 
-  python tools/train_classifier.py \
-      --features_path .scratch/datasets/test_features.pt \
-      --max_epochs 10 \
-      --name test_clf --ver v1
+The legacy shell wrappers (`tools/train_pam50_final.sh`, `tools/run_cnv_fusion_ladder.sh`,
+`tools/evaluate_pam50_multimodal.sh`, `tools/train_er_*.sh`, `tools/cptac/run_pipeline.sh`) still
+work: each is now a shim that prints and then runs the equivalent `dp-*` command. Their pre-refactor
+copies are frozen under `tests/legacy_wrappers/`, and a parity test executes both sides under a
+stubbed `python` and compares the parsed argparse namespaces, so the refactor cannot have moved a
+hyperparameter.
 
-  This is faster for testing before scaling to all 47 slides.
+## Every run describes itself
 
-  ---
-  Expected Behavior
+A training run writes into `${paths.results_root}/<exp_code>_s<seed>/`, beside CLAM's own outputs:
 
-  1. Feature extraction: Progress bar shows ~135 batches for slide 25 (8635 ÷ 64)
-  2. Training: Each epoch shows train/val loss decreasing, balanced accuracy increasing from ~50%
-  3. Class imbalance handling: Weighted loss ensures the model doesn't just predict all infiltrant patches
-  4. Patient-level split: Train/val split is done at slide level (e.g., slide 25 might go entirely to train, future slides split 80/20)
+| file | why it exists |
+|---|---|
+| `config.resolved.yaml` | Hydra's `.hydra/config.yaml` is stored **unresolved**, so replaying it on another machine reconstructs a different configuration. This is the snapshot that actually replays. |
+| `run_metadata.json` | git SHA / dirty state, interpreter, platform, GPUs, dependency versions, every seed in effect, the command line, timing, exit status, and the hyperparameters CLAM hard-codes outside argparse |
+| `clam_argv.json` | the exact argv handed to `main.py`, its cwd and the interpreter that ran it |
+| `metrics.json` | CLAM's `summary.csv`, machine-readable |
+| `.hydra/` | Hydra's own record, copied in after the run |
 
-  ---
-  Scaling to All 47 Slides
+A run directory that already holds `summary.csv` or an `s_*_checkpoint.pt` is **refused**
+(`run.overwrite=true` to override). `.scratch/` is gitignored and unrecoverable, and the five
+completed ladder arms cost 2 h 38 min of GPU time.
 
-  Once you have all 47 WSIs patched in .datasets/patches/{1,2,...,47}/:
+## Layout
 
-  # Single feature extraction run (processes all slides at once)
-  python tools/extract_features.py \
-      --patch_root .datasets/patches \
-      --output .scratch/datasets/uni2h_all47_insitu_vs_infiltrant.pt \
-      --batch_size 64
+```
+dpcode/              the configuration and entry-point layer
+├── conf/            the Hydra tree: paths, sources, clam, tracking, experiment,
+│                    fusion, analyses, evaluate, acquire, cptac
+├── cli/             train.py evaluate.py analysis.py data.py cptac.py config.py
+├── paths.py         path resolution, with or without Hydra
+├── schema.py        structured configs; the closed key set
+├── clam_args.py     CLAM's real parser, extracted by AST and never imported
+├── runinfo.py       run-directory self-description and the overwrite guard
+├── determinism.py   records what is seeded and what is not
+└── wandb_util.py
 
-  # Train on full dataset
-  python tools/train_classifier.py \
-      --features_path .scratch/datasets/uni2h_all47_insitu_vs_infiltrant.pt \
-      --max_epochs 50 \
-      --name insitu_vs_infiltrant_all47 --ver v1
+project/
+├── CLAM/            vendored CLAM + this project's multimodal fork
+│   ├── main.py                    tasks, --fusion_mode, the --tabular_* / --pretrained_* flags
+│   ├── models/model_multimodal.py CLAMRNAFusion, TabularMLPEncoder, the six fusion operators
+│   ├── dataset_csv/*.csv          per-task manifests   -- TRACKED PRIMARY INPUTS
+│   └── splits/<task>_100/         fold definitions     -- TRACKED PRIMARY INPUTS
+├── data/            feature_datamodule.py, patch_dataset.py, transforms.py, pam50.R
+├── survival/, MCAT/ dormant
+├── UNI/             untracked; needed only to tile new slides, never on the PAM50 path
+└── base/, loggers/  legacy scaffold
 
+tools/               the scripts the entry points dispatch, plus the analyses
+├── pam50_arms.py, evaluate_cnv_wsi_fusion.py, stack_wsi_cnv.py, compare_fusion_ladder.py
+├── download_cnv_mutations.py, make_cnv_tabular.py, download_embeddings.py, download_cptac.py
+├── cptac/           download -> audit -> manifest -> inference
+├── data/            label tables + reference/gene_arm_hg38.csv (the pin on the 39 features)
+├── rna/, diagnostics/, nou/, hsi_bc/   dormant or ablation-only
+└── *.sh             shims over dp-train / dp-evaluate / dp-cptac
 
-cd project/CLAM
-  python create_splits_seq.py --task tcga_brca_recurrence --seed 1 --k 10 --val_frac 0.15 --test_frac 0.0 --label_frac 1.0
+tests/               parity, schema, paths, config composition, synthetic end-to-end
+docs/                results, the config reference, the literature survey, parked cohorts
+```
 
-  python main.py --drop_out 0.25 --early_stopping --lr 2e-4 --k 10 --exp_code tcga_brca_recurrence_clam_sb --weighted_sample --bag_loss ce --inst_loss svm --task tcga_brca_recurrence --model_type clam_sb --log_data --data_root_dir /workspace/dp-code/.datasets/embeddings --embed_dim 1536 --results_dir /workspace/dp-code/.scratch/experiments/clam
+`project/CLAM/dataset_csv/tcga_brca_subtyping.csv` and `project/CLAM/splits/tcga_brca_subtyping_100/`
+are **distributed primary inputs, not derived artifacts**: they define the task and the exact fold
+draw behind every published number, they have no recorded derivation, and regenerating them with a
+different seed invalidates the entire results chain. No entry point writes into them.
 
-   python main.py \
-    --drop_out 0.25 \
-    --early_stopping \
-    --lr 2e-4 \
-    --k 10 \
-    --exp_code tcga_brca_recurrence_clam_sb \
-    --weighted_sample \
-    --bag_loss ce \
-    --inst_loss svm \
-    --task tcga_brca_recurrence \
-    --model_type clam_sb \
-    --log_data \
-    --data_root_dir /workspace/dp-code/.datasets \
-    --embed_dim 1536 \
-    --results_dir /workspace/dp-code/.scratch/experiments/clam
+## Where to go next
+
+| you want | read |
+|---|---|
+| to reproduce a number | **[REPRODUCING.md](REPRODUCING.md)** — the cheap path first, then the full one |
+| the result itself, with controls | [`docs/cnv-wsi-fusion-external-validation.md`](docs/cnv-wsi-fusion-external-validation.md) |
+| every config key, generated | [`docs/config-reference.md`](docs/config-reference.md) |
+| working conventions, gotchas, known gaps | [`CLAUDE.md`](CLAUDE.md) |
+| where this sits in the literature | [`docs/implementation-research/PAM50/README.md`](docs/implementation-research/PAM50/README.md) |
+| the completed ER thread | [`docs/er-prediction-results.md`](docs/er-prediction-results.md), [`docs/er-external-validation-results.md`](docs/er-external-validation-results.md) |
+| a parked cohort | [`docs/parked-cohorts/histology-hsi-bc.md`](docs/parked-cohorts/histology-hsi-bc.md) |
+
+## Known gaps
+
+Real, unfixed, and deliberately preserved rather than papered over. `CLAUDE.md` carries the detail.
+
+- **`film_attention` and `coattn` checkpoints cannot be evaluated.** `evaluate_multimodal.py` has no
+  branch for either operator; `dp-evaluate` refuses them up front with the reason instead of dying
+  inside `load_state_dict`. The ladder is compared through `dp-analysis compare_fusion_ladder`,
+  which reads the per-fold prediction pickles and needs no evaluator.
+- **`dp-evaluate` defaults to the TCGA test split, not CPTAC.** Swapping only the tabular table gives
+  you TCGA slides scored against CPTAC-shaped rows.
+- **`residual` fusion has no trainable second branch**, so `fusion=residual` refuses at composition
+  time rather than after creating a run directory.
+- **The reproduction bundle has not been published.** `dp-data headline-artifacts` builds it and a
+  SHA256 manifest; depositing it somewhere citable is an author decision. Until then three of the
+  four inputs to the cheap path are not obtainable from a clone. See REPRODUCING.md.
+- **The repository's licence is unresolved** — see `CITATION.cff`. `project/CLAM` and `project/MCAT`
+  are GPLv3 and CLAM is modified in place; the root `LICENCE` is unfilled Apache-2.0. Do not assume
+  either applies until the author decides.
+
+## Data access and privacy
+
+TCGA-BRCA and CPTAC-BRCA are public. The pre-extracted UNI2-h features for both cohorts come from
+the **gated** HuggingFace dataset `MahmoodLab/UNI2-h-features`, which needs an approved access
+request; the UNI2-h encoder (`MahmoodLab/UNI2-h`) is separately gated and is needed only to tile new
+slides.
+
+A private institutional cohort is referenced by configuration (`DP_NOU_ROOT`) and is **not** part of
+this repository, not part of any reported result, and has no committed default path. Never point a
+public W&B project at a run that touches it.
+
+## Citing
+
+See [`CITATION.cff`](CITATION.cff) — and note that several fields there are placeholders only the
+author can fill. If you use this code, cite CLAM (Lu et al.), UNI (Chen et al.), TCGA-BRCA,
+CPTAC-BRCA and cBioPortal as well; this repository is a fork and an integration of their work.
