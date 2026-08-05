@@ -1,0 +1,29 @@
+# `dp-data headline-artifacts` — assemble the ~0.8 MB bundle that reproduces the
+# external half of the headline table with no GPU, no slide and no gated download.
+#
+# This exists because the project's best reproducibility claim is currently false.
+# The external table needs four inputs; three of them
+# (`ensemble_predictions.csv`, both `*_cna_arm.csv`) are gitignored with no
+# release mechanism — no LFS, no `.gitattributes`, no deposit — so "a stranger
+# reproduces it in a minute" is really "a stranger cannot reproduce it at all"
+# (DESIGN-ADDENDUM A11).
+#
+# The command COPIES the files (never moves them) into `output_dir`, laid out
+# exactly as they sit in a default clone, and writes a `sha256sum -c`-compatible
+# manifest beside them. Publishing the bundle needs the author: a Zenodo deposit,
+# a GitHub release or institutional storage, plus the decision about which. The
+# manifest is what makes any of those verifiable afterwards.
+#
+#   dp-data headline-artifacts                      # build into output_dir
+#   dp-data verify-artifacts --bundle <dir>         # check a downloaded bundle
+
+output_dir: ${paths.scratch_root}/headline-artifacts
+
+# `sha256sum -c --ignore-missing <manifest>` works on this file as-is.
+manifest_name: MANIFEST.sha256
+
+# Where the manifest belongs once the bundle is published: a TRACKED path, so a
+# stranger can verify a download against a checksum that arrived with the clone
+# rather than with the download. `dp-data headline-artifacts` prints the one
+# command that installs it there; it does not write into the tracked tree itself.
+tracked_manifest: ${paths.repo_root}/docs/headline-artifacts.sha256

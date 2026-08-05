@@ -1,0 +1,31 @@
+# `dp-data embeddings` — the GATED UNI2-h WSI feature stores.
+#
+# One HuggingFace dataset, `MahmoodLab/UNI2-h-features`, holds both cohorts.
+# Access is per user and by request: https://huggingface.co/datasets/MahmoodLab/UNI2-h-features
+# The token is read from $HF_TOKEN (or a stored `hf auth login`) AT THE CALL SITE
+# and is deliberately not a config key — a resolved config snapshot is meant to be
+# publishable.
+#
+# Sizes: TCGA 15.8 GB archive -> 66 GB extracted (1126 .h5);
+#        CPTAC 16.0 GB archive -> 34 GB extracted (653 .h5).
+# Both archives stay on disk beside their extraction; deleting them afterwards is
+# safe and saves 32 GB.
+#
+#   dp-data embeddings                            # TCGA
+#   dp-data embeddings acquire.cohort=cptac-brca  # CPTAC
+#   dp-data embeddings acquire.dry_run=true       # check the gate, transfer nothing
+
+cohort: tcga-brca # tcga-brca | cptac-brca
+
+# null keeps the destination that `dpcode/conf/paths/default.yaml` assigns to the
+# cohort (`paths.tcga_embeddings` / `paths.cptac_embeddings`), so changing
+# `cohort` alone is always correct. Set it only to put a store somewhere else.
+output_dir: null
+
+# Asserted after extraction; null uses the cohort's known count (1126 / 653), 0
+# disables. This is the check that would have caught features landing in a
+# directory nothing reads.
+expected_h5: null
+
+download_only: false # fetch the archive, skip extraction
+dry_run: false # check gate access and report the size, transfer nothing

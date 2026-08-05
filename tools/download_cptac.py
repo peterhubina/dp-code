@@ -16,13 +16,35 @@ other, so this pulls each and joins them on the CPTAC case id (``01BR001``):
             Zenodo for recurrence and survival. GDC and PDC clinical carry
             neither PAM50 nor receptor status, so neither is enough on its own.
 
-    python tools/download_cptac.py --modality clinical    # small, start here
-    python tools/download_cptac.py --modality rna
+START HERE, and note that this is NOT what ``--modality clinical`` does::
+
+    python tools/download_cptac.py --modality all --cohort-only --dry-run
+
+That is the only invocation that produces the complete cohort metadata, and it
+transfers no slide and no RNA file. ``cohort.csv`` is written only when more than
+one modality is requested (``if len(wants) > 1``, near the bottom of ``main``),
+so ``--modality clinical`` alone — which this docstring used to recommend as the
+place to start — cannot produce it, while
+``tools/cptac/prepare_cptac_manifest.py`` requires it. ``--dry-run`` still writes
+``wsi_manifest.csv`` and ``rna_manifest.csv`` (both are written before the
+dry-run check in their respective fetchers), and the three files it produces are
+byte-identical to the ones a full download produces. ``dp-cptac phase=0`` is
+exactly this command.
+
+The bulk downloads, when you actually want the primary data::
+
+    python tools/download_cptac.py --modality clinical    # ~100 KB
+    python tools/download_cptac.py --modality rna         # 548 MB
     python tools/download_cptac.py --modality wsi --workers 8
     python tools/download_cptac.py --modality all --cohort-only
 
 ``--cohort-only`` drops slides whose case lacks RNA or a PAM50 label, which is the
 difference between 654 slides / 114 GB and 391 slides / 68 GB.
+
+Nothing in this repository opens a ``.svs``: the WSI features arrive
+pre-extracted from HuggingFace, and only ``filename`` and ``mpp_x`` from
+``wsi_manifest.csv`` are ever read. The 68 GB of slides is acquirable but
+unnecessary for every number the project reports.
 
 Only CPTAC-BRCA has the RNA and clinical wiring; ``--collection`` fetches WSIs
 for any other CPTAC collection (CPTAC-LUAD, CPTAC-CCRCC, …).

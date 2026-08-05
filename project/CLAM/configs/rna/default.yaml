@@ -1,5 +1,12 @@
 data:
-  rna_dir: /workspace/dp-code/.scratch/TCGA-BRCA-rna
+  # The legacy Xena RNA tables (`paths.rna_legacy_dir`). Resolved rather than
+  # hardcoded: DP_SCRATCH_ROOT wins, then DP_REPO_ROOT/.scratch, then the
+  # repository root derived from the invocation directory -- `train_rna_hydra.py`
+  # does `from train_rna import ...`, so it can only be launched from
+  # `project/CLAM`, which makes `${hydra:runtime.cwd}/../..` the repository root.
+  # On the machine that produced the published numbers this resolves to exactly
+  # the path that used to be written here literally.
+  rna_dir: ${oc.env:DP_SCRATCH_ROOT,${oc.env:DP_REPO_ROOT,${hydra:runtime.cwd}/../..}/.scratch}/TCGA-BRCA-rna
   data_path: null
   slide_csv: null
   class_set: 4class

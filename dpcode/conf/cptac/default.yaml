@@ -1,0 +1,76 @@
+# `dp-cptac` — the CPTAC-BRCA external-validation pipeline, phases 0-4.
+#
+# Phase 0 is new and is the entry point a stranger needs first
+# (DESIGN-ADDENDUM A12). `tools/cptac/run_pipeline.sh` never called
+# `tools/download_cptac.py` at all: it listed `wsi_manifest.csv` and `cohort.csv`
+# as prerequisites and then started the 16 GB gated feature download, so a fresh
+# machine paid for the download and only then discovered it had no manifests.
+#
+# `cohort.csv` has exactly one producer: `download_cptac.py` with MORE THAN ONE
+# modality requested (`if len(wants) > 1` at download_cptac.py:506). The route its
+# own docstring used to recommend first, `--modality clinical`, provably cannot
+# write it. `--modality all --cohort-only --dry-run` writes `wsi_manifest.csv`,
+# `rna_manifest.csv`, `clinical/*.csv` and `cohort.csv` and transfers no slide and
+# no RNA file, which is why `metadata.dry_run` below defaults to true: the 391
+# `.svs` files (68 GB) that a real `--modality all` would fetch are read by
+# nothing in this repository. Only `filename` and `mpp_x` from the manifest are
+# ever used.
+#
+# Select phases with `dp-cptac phase=0`, `phase=1,2,3,4`, or `phase=all`
+# (shorthand for `cptac.phase=...`).
+
+phase: all # 0 | features | 1 | 2 | 3 | 4 | all, or a comma-separated list
+
+# --- phase 0: cohort metadata, no bulk transfer -----------------------------
+metadata:
+  output: ${paths.cptac_root}
+  collection: CPTAC-BRCA
+  # `all` is the only value that produces cohort.csv. Changing it breaks phase 2.
+  modality: all
+  # Restrict to cases that have RNA and a PAM50 label: 391 of 654 slides. It
+  # decides which rows the manifests carry, so it must match how the feature
+  # store was built.
+  cohort_only: true
+  # Metadata only. Setting this false starts a 68 GB `.svs` download that no
+  # script in this repository ever opens.
+  dry_run: true
+  workers: 6
+  limit: 0 # >0 truncates the slide list; for smoke checks only
+
+# --- the gated feature download (16 GB archive -> 34 GB) --------------------
+features:
+  cohort: cptac-brca
+  output_dir: ${paths.cptac_embeddings}
+  # Asserted after extraction. 0 disables the check.
+  expected_h5: 653
+
+# --- phase 1: provenance audit ----------------------------------------------
+audit:
+  feature_dir: ${paths.cptac_embeddings}
+  wsi_manifest: ${paths.cptac_root}/wsi_manifest.csv
+  out_csv: ${paths.cptac_validation_dir}/metadata/feature_provenance.csv
+
+# --- phase 2a: coverage reconciliation + CLAM manifest ----------------------
+manifest:
+  feature_dir: ${paths.cptac_embeddings}
+  wsi_manifest: ${paths.cptac_root}/wsi_manifest.csv
+  cohort: ${paths.cptac_root}/cohort.csv
+  dataset_csv: ${paths.cptac_root}/cptac_brca_pam50_dataset.csv
+  coverage_csv: ${paths.cptac_validation_dir}/metadata/coverage_report.csv
+
+# --- phase 3: frozen-weight 10-fold inference -------------------------------
+infer:
+  feature_dir: ${paths.cptac_embeddings}
+  dataset_csv: ${..manifest.dataset_csv}
+  # The TCGA-trained WSI arm. Nothing is refit or tuned on CPTAC, ever.
+  ckpt_dir: ${paths.results_root}/pam50_final_s1
+  output_dir: ${paths.cptac_validation_dir}/results/predictions
+  n_folds: 10
+  n_classes: 4
+  embed_dim: 1536 # UNI2-h features are 1536-dim
+  model_size: big
+  dropout: 0.5
+
+# --- phase 4: slide- and case-level metrics ---------------------------------
+summarise:
+  results_dir: ${..infer.output_dir}

@@ -1,0 +1,21 @@
+# `dp-data cnv` — arm-level copy number for both cohorts, from cBioPortal + UCSC.
+#
+# The defaults are the headline invocation:
+#   python tools/download_cnv_mutations.py --what cna --representation arm --validate-arms
+#
+# ORDERING. `download_cnv_mutations.py` filters CPTAC cases against
+# `.datasets/cptac-brca/cptac_brca_pam50_dataset.csv`, which `dp-cptac phase=2`
+# writes. Run the CPTAC chain first, or the CPTAC matrix comes out with a
+# different row count than the documented 114.
+#
+# PINNING. Neither remote is pinned: the cBioPortal datahub is fetched from a
+# moving `master` branch and UCSC `refGene` is a live table, so the derived
+# gene->arm map is not reproducible across dates. `tools/data/reference/` carries
+# the tracked pin and the script checksums against it.
+
+what: cna # cna | mutations | all
+representation: arm # gistic | log2 | arm | all
+validate_arms: true # score the derived arm values against TCGA's official calls
+all_cases: false # false keeps only cases with UNI2-h features (981 / 114)
+top_mutated: null # null uses the script's own default; only affects `mutations`
+out: ${paths.cnv_dir}

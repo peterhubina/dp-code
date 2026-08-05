@@ -1,0 +1,76 @@
+# `dp-evaluate` — evaluate a trained WSI + tabular fusion checkpoint directory.
+#
+# Every value under `args` is an argument of `project/CLAM/evaluate_multimodal.py`
+# and reproduces `tools/evaluate_pam50_multimodal.sh`'s default for it, value for
+# value. `dp-evaluate` renders them through the parser it extracts from that file,
+# so a flag added or removed there fails loudly here instead of going unreachable.
+#
+# TWO KNOWN GAPS ARE PRESERVED ON PURPOSE (DESIGN.md section 14). Do not "fix"
+# them in this file:
+#
+#   1. `data_root_dir`, `dataset_csv` and `split_dir` point at TCGA, so the
+#      default run scores the TCGA test split — NOT the CPTAC external cohort,
+#      whatever a run's name suggests. A genuine external evaluation needs the
+#      CPTAC embeddings, a CPTAC dataset_csv and a CPTAC tabular table, all three,
+#      and swapping only `args.tabular_csv` (which is what the fusion ladder's
+#      closing hint prints) silently scores TCGA slides against CPTAC-shaped
+#      tabular rows.
+#   2. `args.fusion_mode` accepts only `auto`, `concat` and `gated` — the shell
+#      wrapper's list, narrower than the evaluator's own. The list is a constant
+#      in `dpcode/cli/evaluate.py`, deliberately not a config key, so that
+#      widening it is a code change someone has to justify rather than an
+#      override someone can type.
+#
+# A third trap, and the reason the ladder's hint has never worked for ANY arm:
+# `args.tabular_hidden_dim` is 256 here because the RNA fusion runs trained at
+# 256, while the CNV ladder trained at 64. Evaluating a ladder checkpoint at the
+# default dies inside `load_state_dict(..., strict=True)` on a shape mismatch.
+# `dp-evaluate` reads the checkpoint directory's own `experiment_*.txt` and warns
+# with the exact overrides before dispatching.
+
+name: pam50_multimodal
+
+args:
+  # --- what to evaluate ---------------------------------------------------
+  data_root_dir: ${paths.tcga_embeddings}
+  tabular_csv: ${paths.rna_legacy_dir}/TCGA_BRCA_RNA_primary_tumor_4class_clam.csv.gz
+  ckpt_dir: ${paths.results_root}/pam50_wsi_rna_gatedfusion_s1
+  output_dir: ${paths.results_root}/pam50_wsi_rna_gatedfusion_eval
+  split_dir: ${paths.splits_root}/tcga_brca_subtyping_100
+  dataset_csv: ${paths.dataset_csv_dir}/tcga_brca_subtyping.csv
+
+  # --- which folds and which split ---------------------------------------
+  split: test
+  fold: -1 # -1 evaluates k_start:k_end rather than one fold
+  k: 10
+  k_start: 0
+  k_end: -1 # -1 means `k`
+
+  # --- the architecture the checkpoint was trained with -------------------
+  # These are not free choices: `load_state_dict(..., strict=True)` requires the
+  # model built here to match the saved one exactly.
+  embed_dim: 1536 # UNI2-h features are 1536-dim
+  model_type: clam_mb
+  model_size: big
+  fusion_mode: auto # auto | concat | gated  (see the header)
+  drop_out: 0.5
+  B: 4
+  tabular_case_id_col: case_id
+  tabular_label_col: label
+  tabular_hidden_dim: 256 # 64 for every CNV ladder arm — see the header
+  tabular_num_layers: 2
+  fusion_hidden_dim: 32
+  rna_hidden_dims: "1024,512"
+  rna_dropout: 0.4
+  residual_scale: 0.2
+
+  # --- W&B, as the evaluator's own flags ----------------------------------
+  # Separate from the `tracking` config group, which is dpcode's own logging and
+  # does not reach this subprocess. The shell wrapper passed `--wandb_project`
+  # and `--wandb_run_name` unconditionally and `--wandb` only when asked; the
+  # same holds here, since `false` renders as an omitted store_true flag.
+  wandb: false
+  wandb_project: clam-brca-subtyping-cv
+  wandb_entity: null
+  wandb_run_name: pam50_wsi_rna_gatedfusion_eval
+  wandb_mode: null # null | online | offline | disabled

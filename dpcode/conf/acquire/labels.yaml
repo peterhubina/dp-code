@@ -1,0 +1,18 @@
+# `dp-data labels` — the label tables under `tools/data/`.
+#
+# BOTH OUTPUTS ARE GIT-TRACKED, so a clone already has them and this command is
+# only for refreshing them. It writes into a tracked directory: check `git diff`
+# afterwards, because a changed label table changes every published number
+# downstream.
+#
+#   tcga_brca_pam50_labels.csv   981 cases, cBioPortal SUBTYPE, the PAM50 labels
+#                                every CNV and WSI number in the thesis uses
+#   tcga_brca_labels.csv         TCGA-CDR recurrence/DFI, feeds the
+#                                `tcga_brca_recurrence` task only
+
+pam50: true
+
+# Off by default: it fetches a 2.9 MB xlsx from an Elsevier CDN with a spoofed
+# User-Agent (`tools/fetch_tcga_labels.py:16,23`), which is the most rot-prone
+# remote in the project, and nothing in the headline chain reads its output.
+tcga_cdr: false
