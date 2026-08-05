@@ -123,7 +123,8 @@ def main() -> int:
         for key in DIAGNOSTICS:
             if key in film.columns:
                 v = film.loc[shared, key]
-                print(f"  {key:28s} mean {v.mean():.5f}  median {v.median():.5f}  max {v.max():.5f}")
+                print(f"  {key:28s} mean {v.mean():.5f}  median {v.median():.5f}  "
+                      f"max {v.max():.5f}")
     return 0
 
 
