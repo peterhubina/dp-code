@@ -246,6 +246,44 @@ H&E alone: the best of them, `coattn`, adds +0.012 over WSI-only where the avera
 it moved off its zero-initialisation (`gamma_dev` mean 0.016, `beta_abs` 0.015,
 `tabular_logit_abs` 0.031). It used the copy-number vector and still finished below WSI-only.
 
+### Controlling for model count: the ensemble explanation is dead
+
+The obvious objection is that the mean averages two models while each operator is one. So ensemble
+the operators and re-ask. `n_models` is the number of independently trained predictors averaged:
+
+| arm | n_models | macro AUROC | balanced acc | Δ vs mean (AUROC) |
+|---|---|---|---|---|
+| **probability mean (WSI + CNV)** | 2 | **0.9259** | **0.7513** | — |
+| fusion ensemble (all 5) | 5 | 0.9087 | 0.7195 | −0.017 **sig** |
+| best fusion pair (gated + coattn) | 2 | 0.9108 | 0.6925 | −0.015 **sig** |
+| worst fusion pair (concat + film_attention) | 2 | 0.8896 | 0.6821 | −0.036 **sig** |
+
+**Five fusion models ensembled still lose to two independently trained ones.** The best pair is
+chosen post hoc by maximum AUROC on the same data — selection that favours fusion — and it still
+loses significantly. Model count does not explain the gap.
+
+### Why: joint training collapses the diversity the ensemble runs on
+
+| error correlation φ | value |
+|---|---|
+| among the 5 fusion operators | **0.656** (min 0.582, max 0.706) |
+| WSI-only vs CNV-only | **0.193** |
+
+That is the mechanism. Two models trained independently on different modalities make nearly
+independent mistakes, and averaging them recovers most of the complementary signal. Five operators
+trained jointly on a shared trunk make *the same* mistakes as each other, so ensembling them
+recovers little. **The joint representation costs more in lost diversity than it gains in
+cross-modal interaction.**
+
+This is the explanation the fusion literature is missing. Four groups in
+`docs/implementation-research/PAM50/` report fusion architectures failing to beat a strong single
+modality; none reports the trivial average, and none measures error diversity.
+
+**Caveat that makes the `--no_warm_start` run essential.** All five operators warm-start their WSI
+branch from the same `pam50_final_s1` checkpoint, which is an obvious candidate cause of φ = 0.656.
+Until one operator is trained from scratch, "joint training collapses diversity" and "shared
+initialisation collapses diversity" are not separated.
+
 ### The confound that has to be resolved before this is claimed
 
 The probability mean is an **ensemble of two independently trained models**; every operator is a
@@ -256,12 +294,8 @@ That distinction matters for what can be claimed:
 
 - *"A trivial average of two independent predictors beats every trained joint fusion operator we
   tried"* — supported by this table, and practically decisive.
-- *"Fusion operators do not work for this task"* — **not** supported yet, because the comparison is
-  confounded with model count.
-
-Two runs separate them, and both should be done before the chapter is written: ensemble the fusion
-arms and test whether that clears the mean, and re-run one operator with `--no_warm_start`, since
-warm-starting the WSI branch may be anchoring the joint models near their initialisation.
+- *"Fusion operators do not work for this task"* — the model-count half of this objection is now
+  answered above; what remains is the shared-initialisation half, which `--no_warm_start` settles.
 
 ## 9. Positioning
 

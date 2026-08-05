@@ -117,6 +117,56 @@ def main() -> int:
             cells.append(f"{lab} {mean_d:+.4f} [{lo:+.4f},{hi:+.4f}] {verdict:3s}")
         print(f"  {name:18s} " + " | ".join(cells))
 
+    # Is the mean's advantage fusion or just model count? It averages two models; each operator is
+    # one. So ensemble the operators and re-ask. A 5-model fusion ensemble that still loses to a
+    # 2-model average cannot be explained by counting models.
+    ladder_present = [m for m in LADDER if m in probs]
+    if len(ladder_present) > 1:
+        print("\n=== controlling for model count ===")
+        ens = {f"fusion ensemble (all {len(ladder_present)})":
+               np.mean([probs[m] for m in ladder_present], axis=0)}
+        pairs = {f"{a}+{b}": (probs[a] + probs[b]) / 2
+                 for i, a in enumerate(ladder_present) for b in ladder_present[i + 1:]}
+        best = max(pairs, key=lambda k: macro_auroc(y.values, pairs[k]))
+        worst = min(pairs, key=lambda k: macro_auroc(y.values, pairs[k]))
+        ens[f"best fusion pair ({best})"] = pairs[best]
+        ens[f"worst fusion pair ({worst})"] = pairs[worst]
+
+        for name, P in ens.items():
+            scored[name] = np.array([[macro_auroc(y.values[j], P[j]),
+                                      balanced_acc(y.values[j], P[j])] for j in idx])
+        print(pd.DataFrame([
+            {"arm": name, "n_models": n,
+             "macroAUROC": round(macro_auroc(y.values, P), 4),
+             "balAcc": round(balanced_acc(y.values, P), 4)}
+            for (name, P), n in zip(
+                [("probability mean (WSI + CNV)", probs["probability mean"]), *ens.items()],
+                [2, len(ladder_present), 2, 2])]).to_string(index=False))
+
+        print("\nvs the equal-weight probability mean:")
+        for name in ens:
+            cells = []
+            for col, lab in enumerate(("dAUROC", "dBalAcc")):
+                mean_d, lo, hi, verdict = delta_ci(scored[name][:, col],
+                                                   scored["probability mean"][:, col])
+                cells.append(f"{lab} {mean_d:+.4f} [{lo:+.4f},{hi:+.4f}] {verdict:3s}")
+            print(f"  {name:34s} " + " | ".join(cells))
+
+        # Diversity is the mechanism to check: joint training on one trunk may simply produce
+        # correlated models, and correlated models ensemble badly.
+        print("\nerror correlation phi (0 = independent mistakes):")
+        correct = {n: (CLASSES[P.argmax(1)] == y.values).astype(float)
+                   for n, P in {**{m: probs[m] for m in ladder_present},
+                                "WSI only": probs["WSI only"],
+                                "CNV only": probs["CNV only"]}.items()}
+        pair_phi = [(np.corrcoef(correct[a], correct[b])[0, 1], a, b)
+                    for i, a in enumerate(ladder_present) for b in ladder_present[i + 1:]]
+        phis = [p for p, _, _ in pair_phi]
+        print(f"  among the {len(ladder_present)} fusion operators: mean {np.mean(phis):.3f} "
+              f"(min {min(phis):.3f}, max {max(phis):.3f})")
+        print(f"  WSI only vs CNV only:               "
+              f"{np.corrcoef(correct['WSI only'], correct['CNV only'])[0, 1]:.3f}")
+
     film = runs.get("film_attention")
     if film is not None and DIAGNOSTICS[0] in film.columns:
         print("\nFiLM conditioner diagnostics (zero => the second modality was ignored):")
