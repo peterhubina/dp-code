@@ -219,7 +219,51 @@ out global rules, not conditional ones. Given that four groups in the survey rep
 gated fusion failing on this task, and that this project's own RNA gate collapsed onto one
 modality, the expected value of building one is low.
 
-## 8. Positioning
+## 8. The fusion-operator ladder: every operator loses to the average
+
+**Reproduce:** `bash tools/run_cnv_fusion_ladder.sh` then `python tools/compare_fusion_ladder.py`.
+
+Five operators, H&E primary (CLAM-MB + UNI2-h, WSI branch warm-started from `pam50_final_s1`),
+arm-level CNV as the second modality, all on `splits/tcga_brca_subtyping_100`. Pooled out-of-fold
+macro AUROC over the 599 cases every run shares -- not CLAM's per-fold average, which is a
+different quantity.
+
+| arm | macro AUROC | 95% CI | balanced acc | Δ vs mean (AUROC) |
+|---|---|---|---|---|
+| WSI only | 0.8872 | [0.867, 0.909] | 0.6772 | −0.039 **sig** |
+| CNV only | 0.8721 | [0.848, 0.895] | 0.6784 | −0.054 **sig** |
+| **probability mean** | **0.9259** | [0.910, 0.941] | **0.7513** | — |
+| concat | 0.8827 | [0.859, 0.906] | 0.6741 | −0.043 **sig** |
+| gated | 0.8947 | [0.875, 0.915] | 0.6832 | −0.031 **sig** |
+| cross_attention | 0.8917 | [0.869, 0.914] | 0.6848 | −0.034 **sig** |
+| film_attention | 0.8818 | [0.861, 0.903] | 0.6652 | −0.044 **sig** |
+| coattn | 0.8992 | [0.879, 0.919] | 0.6842 | −0.027 **sig** |
+
+Every operator is significantly below the untrained average on both metrics. They also barely clear
+H&E alone: the best of them, `coattn`, adds +0.012 over WSI-only where the average adds +0.039.
+
+`film_attention` did not simply ignore the second modality -- the conditioner's own diagnostics show
+it moved off its zero-initialisation (`gamma_dev` mean 0.016, `beta_abs` 0.015,
+`tabular_logit_abs` 0.031). It used the copy-number vector and still finished below WSI-only.
+
+### The confound that has to be resolved before this is claimed
+
+The probability mean is an **ensemble of two independently trained models**; every operator is a
+**single** model. Ensembling buys variance reduction for free, so an unknown part of the +0.039 is
+an ensemble effect rather than a fusion effect.
+
+That distinction matters for what can be claimed:
+
+- *"A trivial average of two independent predictors beats every trained joint fusion operator we
+  tried"* — supported by this table, and practically decisive.
+- *"Fusion operators do not work for this task"* — **not** supported yet, because the comparison is
+  confounded with model count.
+
+Two runs separate them, and both should be done before the chapter is written: ensemble the fusion
+arms and test whether that clears the mean, and re-run one operator with `--no_warm_start`, since
+warm-starting the WSI branch may be anchoring the joint models near their initialisation.
+
+## 9. Positioning
 
 From the 50-paper survey in `docs/implementation-research/PAM50/`: **no published multimodal PAM50
 model is externally validated with a PAM50-specific metric.** Amer et al. 2025 (arXiv:2509.03408) is
