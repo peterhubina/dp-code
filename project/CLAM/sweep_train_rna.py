@@ -1,7 +1,7 @@
 """W&B Bayesian sweep wrapper for Hydra-configured RNA training.
 
-Usage:
-    cd /workspace/dp-code/project/CLAM
+Usage, from the repository root:
+    cd project/CLAM
     wandb sweep sweep_config_rna.yaml
     wandb agent <entity/project/sweep_id>
 
