@@ -9,6 +9,18 @@ Four subcommands:
 
 `reference` writes to stdout by default and to `-o PATH` on request. It does not
 choose a location: the generated document is owned by the documentation track.
+
+`show` and `validate` compose `conf/config.yaml`, EXCEPT when an override names
+the `experiment` or `fusion` group — then they compose `conf/train.yaml`, which is
+what `dp-train` composes and the only primary config that carries those groups:
+
+    dp-config validate experiment=pam50_wsi_final
+    dp-config validate experiment=pam50_wsi_cnv fusion=film_attention
+
+That is not a convenience. `validate`'s `topk` preflight fires only for
+`clam.inst_loss=svm`, and the only config that sets it is
+`experiment/pam50_wsi_final.yaml` — the frozen WSI baseline. Without a way to
+name an experiment, the guard was unreachable. See :func:`primary_config_name`.
 """
 
 from __future__ import annotations
@@ -28,6 +40,18 @@ from ..paths import assert_paths_absolute, conf_dir
 
 CONFIG_NAME = "config"
 VERSION_BASE = "1.3"
+
+#: The primary config that carries the `experiment` and `fusion` groups.
+#: `config.yaml` deliberately does not: it is shared by every entry point, and a
+#: group listed there would be mandatory for all of them (see the header of
+#: `dpcode/conf/train.yaml`). So naming an experiment here composes what
+#: `dp-train` composes, rather than a second, drifting copy of it.
+TRAIN_CONFIG_NAME = "train"
+
+#: Config groups that only exist under :data:`TRAIN_CONFIG_NAME`. An override
+#: targeting one of them switches the primary config; see
+#: :func:`primary_config_name`.
+TRAIN_ONLY_GROUPS = ("experiment", "fusion")
 
 #: Paths that arrive with a clone. A missing one is an error: it means the
 #: checkout is broken, not that data has yet to be downloaded.
@@ -53,6 +77,36 @@ ACQUIRED_DATA_KEYS = (
 )
 
 
+def primary_config_name(overrides: Sequence[str] = ()) -> str:
+    """Which primary config an override list needs: `config.yaml` or `train.yaml`.
+
+    `experiment=…` and `fusion=…` are groups of `train.yaml` only, so composing
+    `config.yaml` with either used to die with Hydra's "Could not override
+    'experiment'. No match in the defaults list" — and Hydra's own suggested
+    remedy, `+experiment=…`, then failed one level deeper, because every
+    experiment file carries `override /fusion:` and `fusion` was not in the
+    defaults list either.
+
+    The cost of that was not cosmetic: `dp-config validate`'s `topk` preflight
+    fires only when `clam.inst_loss=svm`, which no config sets except
+    `experiment/pam50_wsi_final.yaml`. So the guard that exists to catch a broken
+    `--inst_loss svm` dependency BEFORE a 10-fold run could not be reached by any
+    documented invocation — and `future`, an undeclared transitive dependency of
+    the `topk` git pin, is exactly the failure it was meant to catch.
+
+    Switching the primary config rather than duplicating the groups keeps one
+    definition of what an experiment composes to: `dp-config validate
+    experiment=X` validates the same tree `dp-train experiment=X` runs.
+    """
+    for override in overrides:
+        # Strip Hydra's override prefixes so `+experiment=…` and `~fusion` are
+        # recognised too; they are rejected later, by name, as config surgery.
+        key = override.lstrip("+~").split("=", 1)[0].strip()
+        if key in TRAIN_ONLY_GROUPS:
+            return TRAIN_CONFIG_NAME
+    return CONFIG_NAME
+
+
 def compose_config(
     overrides: Sequence[str] = (), *, with_hydra: bool = False
 ) -> DictConfig:
@@ -60,15 +114,26 @@ def compose_config(
 
     `initialize_config_dir` with an absolute path, so the result does not depend
     on the caller's working directory — which is the whole point of the refactor.
+
+    The primary config is `config.yaml` unless an override names a group that only
+    `train.yaml` carries; see :func:`primary_config_name`.
     """
     from hydra import compose, initialize_config_dir
+
+    config_name = primary_config_name(overrides)
+    if config_name == TRAIN_CONFIG_NAME:
+        # `${dp.required:…}` is registered as a side effect of importing dp-train.
+        # Without it, an experiment that marks a value mandatory (the WSI+RNA arm's
+        # `pretrained_wsi_ckpt`) fails here with OmegaConf's "Unsupported
+        # interpolation type" instead of the message that names the key.
+        from . import train as _train  # noqa: F401
 
     schema.register_configs()
     with initialize_config_dir(
         version_base=VERSION_BASE, config_dir=str(conf_dir()), job_name="dp-config"
     ):
         return compose(
-            config_name=CONFIG_NAME,
+            config_name=config_name,
             overrides=list(overrides),
             return_hydra_config=with_hydra,
         )
@@ -134,7 +199,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
     not_acquired = [key for key in ACQUIRED_DATA_KEYS if not _exists(cfg, key)]
 
-    print(f"config       : {conf_dir() / (CONFIG_NAME + '.yaml')}")
+    print(f"config       : {conf_dir() / (primary_config_name(args.overrides) + '.yaml')}")
     print(f"repo_root    : {cfg.paths.repo_root}")
     print(f"overrides    : {list(args.overrides) or '(none)'}")
     print(f"CLAM flags   : {clam_flags}")

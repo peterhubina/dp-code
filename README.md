@@ -69,9 +69,14 @@ read the wrong files, or none.
 Check the install before downloading anything:
 
 ```bash
-dp-config validate    # paths, tracked inputs, CLAM-schema drift, the topk dependency
+dp-config validate    # paths, tracked inputs, CLAM-schema drift
+dp-config validate experiment=pam50_wsi_final   # ...plus the topk dependency `--inst_loss svm` needs
 dp-config sync-check  # ClamConf still matches CLAM's real 52-flag parser
 ```
+
+Naming an experiment composes `conf/train.yaml`, the same tree `dp-train` runs, and is what reaches
+the experiment-specific checks — `topk` is only required by `clam.inst_loss=svm`, which only the
+frozen WSI baseline sets.
 
 `dp-config validate` on a fresh clone prints a `not acquired :` line listing the data trees you do
 not have yet. That is expected, not a failure.
@@ -114,6 +119,10 @@ dp-cptac --dry-run phase=all                      # every phase's command, in or
 dp-data cnv --dry-run                             # the acquisition command, nothing fetched
 dp-analysis list                                  # the five analyses, one line each
 ```
+
+A dry run works before anything has been downloaded: it prints the plan either way, and then, if the
+inputs are not on disk yet, names what is missing and exits non-zero. So the plan is always visible
+and the exit status still answers "would this run here?".
 
 The second block does real work — CPU-only and cheap, except the last line, which is a 10-fold
 training run:

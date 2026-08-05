@@ -410,10 +410,11 @@ hidden by it.
 | command | what it proves |
 |---|---|
 | `pip install -e '.[dev]'` | the only correct install (see README for why editable is not a preference) |
-| `dp-config validate` | every `paths.*` value absolute, tracked inputs present, `ClamConf` in sync with CLAM's real parser, and `topk` importable when `inst_loss=svm` |
+| `dp-config validate` | every `paths.*` value absolute, tracked inputs present, `ClamConf` in sync with CLAM's real parser |
+| `dp-config validate experiment=pam50_wsi_final` | the above, plus `topk` importable — that check fires only for `inst_loss=svm`, which only this experiment sets, so it is reached only by naming an experiment |
 | `dp-config sync-check` | just the schema-drift check: `in sync: 52 CLAM flags in main.py, ClamConf and clam/base.yaml` |
 | `dp-config show experiment=…` | the fully resolved configuration for an experiment, before it runs |
-| `dp-train --dry-run experiment=…` | the exact CLAM command an experiment would issue, without creating a run directory |
+| `dp-train --dry-run experiment=…` | the exact CLAM command an experiment would issue, without creating a run directory. Works on a machine that has downloaded nothing: the plan prints first, then any missing input is named and the exit status is non-zero |
 | `dp-config reference -o docs/config-reference.md` | regenerates the config reference; it is generated, never hand-written |
 
 `dp-config validate` on a fresh clone prints a `not acquired :` line naming the data trees you have

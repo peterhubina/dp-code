@@ -22,20 +22,31 @@ TWO KNOWN GAPS ARE PRESERVED, NOT FIXED (DESIGN.md section 14):
   is a code constant rather than a config key so that widening it is a change
   someone has to make and justify.
 
-What this entry point adds is that both gaps, and a third undocumented one, fail
-LOUDLY and before dispatch rather than inside `load_state_dict`:
+What this entry point adds is that both gaps, and a third undocumented one, are
+REFUSED loudly and before dispatch rather than dying inside `load_state_dict`:
 
 * a `film_attention` or `coattn` checkpoint directory is refused with a message
   naming the Known-gaps entry it belongs to (there is no evaluator for either);
 * a checkpoint directory whose recorded architecture disagrees with the config —
   most often `tabular_hidden_dim`, 64 for every CNV ladder arm against this
-  config's 256 — is reported with the exact overrides that would fix it. That
+  config's 256 — is refused with the exact overrides that would fix it. That
   mismatch is why the fusion ladder's printed evaluation hint has never worked
   for any of its five arms.
+
+  Every key checked is shape-critical, and `evaluate_multimodal.py` loads with
+  `strict=True`, so there is no configuration in which proceeding succeeds: a
+  warning here would only mean the same failure, later, after a torch import and
+  a CUDA context, with a shape-mismatch traceback instead of a config key.
+  `--allow-arch-mismatch` is the escape hatch for a checkpoint whose *recorded
+  settings* are wrong rather than its weights.
 
 Both checks read the run directory's own `experiment_<exp_code>.txt`
 (`project/CLAM/main.py:422`) or the `clam_argv.json` that `dp-train` writes. No
 checkpoint is opened, so the check costs milliseconds and no GPU.
+
+The plan is printed before either check, so a refusal — or a missing input on a
+machine that has downloaded nothing — arrives underneath a description of what
+was configured rather than instead of one.
 """
 
 from __future__ import annotations
@@ -46,7 +57,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, NamedTuple, Sequence
 
 from omegaconf import DictConfig
 
@@ -235,13 +246,27 @@ def _settings_from_argv(argv: Sequence[str]) -> dict[str, Any]:
     return dict(vars(namespace))
 
 
-def preflight(cfg: DictConfig) -> list[str]:
-    """Refuse the unevaluable, warn about the mismatched. Returns the warnings.
+class Preflight(NamedTuple):
+    """What the checkpoint directory says, split by what the caller may do about it.
+
+    `mismatches` are refusals: every key in :data:`SHAPE_CRITICAL_KEYS` changes a
+    tensor shape or the module graph, so `load_state_dict(..., strict=True)` is
+    certain to reject the run. `advisories` are genuinely advisory — today the one
+    case is a checkpoint directory that records nothing, which is legal and simply
+    cannot be checked.
+    """
+
+    mismatches: list[str]
+    advisories: list[str]
+
+
+def preflight(cfg: DictConfig) -> Preflight:
+    """Read the checkpoint directory's own record of how it was trained.
 
     Raises `SystemExit` for a `film_attention` or `coattn` checkpoint directory
-    and for a checkpoint directory with no `s_*_checkpoint.pt` in it. Everything
-    else is reported and the run proceeds, because the evaluator itself is the
-    authority on whether a state dict loads.
+    (no evaluator exists — a documented known gap) and for a checkpoint directory
+    with no `s_*_checkpoint.pt` in it. Returns everything else for :func:`main` to
+    report, so the plan can be printed above it.
     """
     args_node = cfg.evaluate.args
     ckpt_dir = Path(str(args_node.ckpt_dir))
@@ -256,17 +281,17 @@ def preflight(cfg: DictConfig) -> list[str]:
 
     settings, source = checkpoint_run_settings(ckpt_dir)
     if not settings:
-        return [
+        return Preflight([], [
             f"{ckpt_dir} carries no clam_argv.json and no experiment_*.txt, so the "
             "architecture it was trained with cannot be checked against this config. "
             "A shape mismatch will surface inside load_state_dict instead."
-        ]
+        ])
 
     trained_mode = settings.get("fusion_mode")
     if trained_mode in UNEVALUABLE_FUSION_MODES:
         raise SystemExit(_unevaluable_message(ckpt_dir, str(trained_mode), source))
 
-    warnings: list[str] = []
+    mismatches: list[str] = []
     for recorded_key, config_key in SHAPE_CRITICAL_KEYS.items():
         if recorded_key not in settings:
             continue
@@ -276,17 +301,43 @@ def preflight(cfg: DictConfig) -> list[str]:
             continue  # `auto` is resolved from the checkpoint keys, by design
         if recorded is None or str(recorded) == str(configured):
             continue
-        warnings.append(
+        mismatches.append(
             f"{source} says {recorded_key}={recorded!r}, this config says "
             f"{config_key}={configured!r}. Fix with "
             f"`evaluate.args.{config_key}={recorded}`."
         )
-    if warnings:
-        warnings.append(
-            "load_state_dict(..., strict=True) will reject a shape mismatch, so a "
-            "disagreement above is a failure and not a nuance."
-        )
-    return warnings
+    return Preflight(mismatches, [])
+
+
+def _mismatch_refusal(mismatches: Sequence[str], ckpt_dir: Path) -> str:
+    """The message printed when an architecture mismatch stops the run."""
+    fixes = " ".join(
+        line.split("Fix with `")[1].rstrip("`.") for line in mismatches if "Fix with `" in line
+    )
+    lines = [
+        "Refusing to dispatch: the checkpoint directory was trained with a "
+        "different architecture from this config.",
+        *(f"  * {line}" for line in mismatches),
+        "",
+        "Every key checked here changes a tensor shape or the module graph, and "
+        "evaluate_multimodal.py loads with strict=True, so the evaluator would "
+        "import torch, build the model and die in load_state_dict. That is why "
+        "the fusion ladder's old printed evaluation hint never worked for any of "
+        "its five arms: they trained at tabular_hidden_dim 64 against this "
+        "config's 256.",
+        "",
+    ]
+    if fixes:
+        lines += [
+            "Re-run with the recorded values:",
+            f"  dp-evaluate evaluate.args.ckpt_dir={ckpt_dir} {fixes}",
+            "",
+        ]
+    lines.append(
+        "Or pass --allow-arch-mismatch to dispatch anyway and let load_state_dict "
+        "be the authority."
+    )
+    return "\n".join(lines)
 
 
 def _unevaluable_message(ckpt_dir: Path, mode: str, source: str | None) -> str:
@@ -345,6 +396,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the rendered argv as JSON and stop. Implies --dry-run.",
     )
+    parser.add_argument(
+        "--allow-arch-mismatch",
+        action="store_true",
+        help="Dispatch even when the checkpoint directory records a different "
+        "architecture from this config. The evaluator loads with strict=True, so "
+        "this normally just moves the failure into load_state_dict; it exists for "
+        "a checkpoint whose recorded settings are wrong rather than its weights.",
+    )
     return parser
 
 
@@ -394,15 +453,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps({"cwd": str(clam_root), "argv": rendered}, indent=2))
             return 0
 
-        # Checkpoint first: "this operator has no evaluator" is a more useful
-        # answer than "your RNA table is missing" for someone pointing this at a
-        # ladder arm on a machine that never had the RNA tables.
-        warnings = preflight(cfg)
-        assert_paths_exist(cfg, REQUIRED_INPUT_KEYS)
-
         output_dir = Path(str(cfg.evaluate.args.output_dir))
         command = [sys.executable, script.name, *rendered]
 
+        # The plan is printed BEFORE the checks, so that every refusal below —
+        # and a missing input on a machine that has downloaded nothing — arrives
+        # under a description of what was configured rather than instead of one.
         print(f"config      : evaluate={args.config}")
         print(f"checkpoints : {cfg.evaluate.args.ckpt_dir}")
         print(f"features    : {cfg.evaluate.args.data_root_dir}")
@@ -411,9 +467,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"output      : {output_dir}")
         print(f"cwd         : {clam_root}")
         print("command     : " + " ".join(command))
-        sys.stdout.flush()  # keep the plan above the warnings, not interleaved
-        for warning in warnings:
-            print(f"WARNING: {warning}", file=sys.stderr)
+        sys.stdout.flush()  # keep the plan above the report, not interleaved
+
+        # Checkpoint first: "this operator has no evaluator" is a more useful
+        # answer than "your RNA table is missing" for someone pointing this at a
+        # ladder arm on a machine that never had the RNA tables.
+        report = preflight(cfg)
+        for advisory in report.advisories:
+            print(f"WARNING: {advisory}", file=sys.stderr)
+        if report.mismatches:
+            if not args.allow_arch_mismatch:
+                print(
+                    _mismatch_refusal(
+                        report.mismatches, Path(str(cfg.evaluate.args.ckpt_dir))
+                    ),
+                    file=sys.stderr,
+                )
+                return 2
+            for mismatch in report.mismatches:
+                print(f"WARNING: {mismatch}", file=sys.stderr)
+            print(
+                "WARNING: dispatching anyway (--allow-arch-mismatch); "
+                "load_state_dict(..., strict=True) is now the authority.",
+                file=sys.stderr,
+            )
+        assert_paths_exist(cfg, REQUIRED_INPUT_KEYS)
 
         if args.dry_run:
             print("\n--dry-run: nothing dispatched, nothing written.")

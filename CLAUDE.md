@@ -95,9 +95,13 @@ the parity check.
 
 ```bash
 pip install -e '.[dev]'
-dp-config validate    # paths absolute, tracked inputs present, ClamConf vs CLAM's parser, topk
+dp-config validate    # paths absolute, tracked inputs present, ClamConf vs CLAM's parser
+dp-config validate experiment=pam50_wsi_final   # ...plus the topk pin `--inst_loss svm` needs
 dp-config sync-check  # the schema-drift check alone
 ```
+`validate` and `show` accept `experiment=` / `fusion=` and then compose `conf/train.yaml` — the same
+tree `dp-train` runs. Naming an experiment is what reaches the experiment-specific guards: the `topk`
+import check fires only for `clam.inst_loss=svm`, which only `experiment/pam50_wsi_final.yaml` sets.
 
 **There is no test suite, no Makefile and no automated path gate** — a pytest suite, a synthetic
 smoke run and a `check-paths` gate were built and then deliberately reverted (commit `0c38c14`), so
@@ -155,7 +159,9 @@ dp-analysis compare_fusion_ladder                  # §8, the five ladder arms  
 All CPU, all reading ≈1 MB of CSVs plus prediction pickles; none touches a slide. Each writes a
 self-describing run directory under `.scratch/analysis/<action>/<timestamp>/` (`output.txt`,
 `config.resolved.yaml`, `run_metadata.json`, and a JSON of the numbers where there is one);
-`--no-run-dir` prints only. Direct invocation still works:
+`--no-run-dir` prints only. Missing inputs are named — with the command that produces each — *before*
+the run directory is created, so a failed attempt leaves nothing behind. Flags and overrides may be
+typed in either order. Direct invocation still works:
 `python tools/evaluate_cnv_wsi_fusion.py --internal`.
 
 `cnv_controls` exists because six published figures had **no producing script**: the §3 per-class
@@ -205,8 +211,11 @@ dp-evaluate evaluate.args.ckpt_dir=/abs/path/to/run_s1
 failures into a refusal before dispatch: a `film_attention` / `coattn` checkpoint directory is
 rejected by name, and an architecture mismatch between the checkpoint's own
 `experiment_<exp_code>.txt` and the config (most often `tabular_hidden_dim`, 64 for every ladder arm
-against this config's 256) is reported with the overrides that would fix it. That mismatch is why
-the ladder's old printed evaluation hint never worked for **any** of its five arms.
+against this config's 256) is **refused**, exit 2, with the overrides that would fix it — every key
+checked is shape-critical and the evaluator loads with `strict=True`, so proceeding could only move
+the same failure into `load_state_dict`. `--allow-arch-mismatch` dispatches anyway, for a checkpoint
+whose recorded settings are wrong rather than its weights. That mismatch is why the ladder's old
+printed evaluation hint never worked for **any** of its five arms.
 
 ### 6. The WSI-only arms (already run; re-run only to change the baseline)
 ```bash

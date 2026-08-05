@@ -44,6 +44,12 @@ free to run first, and they turn the classic failure (a wrong `embeddings_dir`
 discovered at the first `h5py.File`, minutes in) into a one-second abort naming the
 config key.
 
+Under `--dry-run` the input check moves to the END, after the plan has been
+printed: a dry run is what README.md offers before any data has been acquired, so
+it must work on an empty machine. The plan is printed either way and the missing
+inputs are reported under it, exactly as `dp-cptac --dry-run` does; the exit
+status is still non-zero, because "this would not run here" is part of the answer.
+
 CLAM is launched through `shutil.which("python")` rather than `sys.executable`,
 deliberately: it is the same interpreter resolution every replaced wrapper used
 (`python main.py`), which is what lets a `PATH`-stubbed fake `python` capture the
@@ -149,11 +155,16 @@ def _train(cfg: DictConfig) -> None:
 def _run(cfg: DictConfig) -> None:
     schema.reject_appended_overrides(allow=bool(cfg.run.allow_config_surgery))
     assert_paths_absolute(cfg)
-    _assert_inputs_exist(cfg)
+    if not _DRY_RUN:
+        _assert_inputs_exist(cfg)
     _warn_on_tracking_mismatch(cfg)
 
     clam_root = Path(str(cfg.paths.clam_root))
     main_py = clam_root / "main.py"
+    # Needed by both paths, and by the plan: without CLAM's parser there is no
+    # argv to print. A missing `main.py` means a broken checkout, not un-acquired
+    # data, so it stays fatal even under `--dry-run`.
+    _assert_clam_main_py(cfg, main_py)
     parser = clam_args.clam_parser(main_py)
 
     clam_values = OmegaConf.to_container(cfg.clam, resolve=True, throw_on_missing=True)
@@ -166,6 +177,7 @@ def _run(cfg: DictConfig) -> None:
     if _DRY_RUN:
         _print_plan(cfg, run_dir, clam_root, command)
         clam_args.validate_clam_args(clam_values, parser=parser, main_py=main_py)
+        _report_missing_inputs(cfg)  # raises SystemExit(2) if anything is missing
         return
 
     runinfo.assert_run_dir_writable(run_dir, bool(cfg.run.overwrite))
@@ -224,6 +236,18 @@ def _run(cfg: DictConfig) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _input_keys(cfg: DictConfig) -> list[str]:
+    """The config keys naming inputs THIS run reads, in the order they are checked."""
+    keys = ["paths.clam_root", "clam.data_root_dir", "clam.split_dir"]
+    if cfg.clam.tabular_csv is not None:
+        keys.append("clam.tabular_csv")
+    # `prefix` is a literal instruction to group one-hot blocks by column-name
+    # prefix (main.py:170-172), not a path.
+    if cfg.clam.tabular_group_spec not in (None, "prefix"):
+        keys.append("clam.tabular_group_spec")
+    return keys
+
+
 def _assert_inputs_exist(cfg: DictConfig) -> None:
     """Fail on a missing input before a run directory exists, naming the key.
 
@@ -233,22 +257,49 @@ def _assert_inputs_exist(cfg: DictConfig) -> None:
 
     `pretrained_wsi_ckpt` is not checked: it carries a `{fold}` placeholder that
     only CLAM expands, and a missing checkpoint fails loudly at fold 0.
-    """
-    keys = ["paths.clam_root", "clam.data_root_dir", "clam.split_dir"]
-    if cfg.clam.tabular_csv is not None:
-        keys.append("clam.tabular_csv")
-    # `prefix` is a literal instruction to group one-hot blocks by column-name
-    # prefix (main.py:170-172), not a path.
-    if cfg.clam.tabular_group_spec not in (None, "prefix"):
-        keys.append("clam.tabular_group_spec")
-    assert_paths_exist(cfg, keys)
 
-    main_py = Path(str(cfg.paths.clam_root)) / "main.py"
+    NOT called under `--dry-run`; see :func:`_report_missing_inputs` for why.
+    """
+    assert_paths_exist(cfg, _input_keys(cfg))
+    _assert_clam_main_py(cfg, Path(str(cfg.paths.clam_root)) / "main.py")
+
+
+def _assert_clam_main_py(cfg: DictConfig, main_py: Path) -> None:
+    """`project/CLAM/main.py` must exist — it is a tracked file, not acquired data."""
     if not main_py.is_file():
         raise FileNotFoundError(
             f"paths.clam_root={cfg.paths.clam_root} has no main.py. dp-train dispatches "
             "`python main.py` from that directory; without it there is nothing to run."
         )
+
+
+def _report_missing_inputs(cfg: DictConfig) -> None:
+    """`--dry-run`'s input check: report AFTER the plan, then exit non-zero.
+
+    A dry run has to work on a machine that has downloaded nothing. README.md
+    offers `dp-train --dry-run experiment=pam50_wsi_final` before any acquisition
+    step, so running the same input check up front made the one command a new user
+    is told to run first the one command they could not run at all.
+
+    The plan is therefore printed unconditionally and the missing inputs are
+    reported under it — the shape `dp-cptac --dry-run` already has. The exit
+    status is still non-zero, and deliberately the same 2 the real run would exit
+    with on the same configuration: `--dry-run` is a preflight, so "the plan is
+    printed" and "this would not run here" are both true and both worth saying.
+    A CI gate or a `&&` chain can rely on the status; a reader gets the plan.
+    """
+    try:
+        assert_paths_exist(cfg, _input_keys(cfg))
+    except FileNotFoundError as exc:
+        sys.stdout.flush()  # keep the report under the plan, not interleaved with it
+        print(
+            f"\n[dry run] this configuration would NOT run on this machine.\n"
+            f"[dry run] {exc}\n"
+            "[dry run] The plan above is still correct; the inputs are not on disk "
+            "yet. See REPRODUCING.md for how to acquire them.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from None
 
 
 def _warn_on_tracking_mismatch(cfg: DictConfig) -> None:

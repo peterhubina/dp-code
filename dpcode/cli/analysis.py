@@ -51,7 +51,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, NamedTuple, Sequence
 
 import numpy as np
 import pandas as pd
@@ -148,6 +148,106 @@ def assert_class_order(cfg: DictConfig) -> None:
                 "order in project/CLAM/main.py for the tabular tables to line up with CLAM's "
                 "integer labels."
             )
+
+
+# --------------------------------------------------------------------------- #
+# preconditions
+# --------------------------------------------------------------------------- #
+
+
+class Need(NamedTuple):
+    """One input an action reads, and the command that produces it.
+
+    `pattern` is `None` when `path` itself must exist, and a glob when `path` is a
+    directory that must contain at least one match — the two cases that actually
+    bite here, because a CLAM run directory that exists but holds no
+    `split_*_results.pkl` is what produced the raw `KeyError: 'case_id'` these
+    checks replace.
+    """
+
+    path: Path
+    pattern: str | None
+    what: str
+    produced_by: str
+
+
+def _needs(cfg: DictConfig, action: str) -> list[Need]:
+    """Every input `action` reads, resolved through the same constants it will use.
+
+    The paths come from `tools.pam50_arms`, which is where the CNV thread's
+    filesystem contract is defined once, so this cannot describe a different file
+    from the one the action opens a moment later.
+    """
+    from tools import pam50_arms as arms
+
+    tcga_cnv = Need(arms.TCGA_ARMS, None, "arm-level CNV, TCGA (981 x 39)", "dp-data cnv")
+    cptac_cnv = Need(arms.CPTAC_ARMS, None, "arm-level CNV, CPTAC (114 x 39)", "dp-data cnv")
+    tcga_labels = Need(arms.TCGA_LABELS, None, "the TCGA PAM50 label table (git-tracked)",
+                       "a complete checkout; `dp-data labels` re-fetches it")
+    cptac_labels = Need(arms.CPTAC_LABELS, None, "the CPTAC PAM50 dataset table",
+                        "dp-cptac phase=0")
+    clam_manifest = Need(arms.CLAM_DATASET_CSV, None,
+                         "CLAM's slide->PAM50 manifest (git-tracked, 0 writers)",
+                         "a complete checkout — REPRODUCING.md B.3: never regenerate it")
+    splits = Need(arms.CLAM_SPLITS, "splits_*.csv",
+                  f"the {arms.SPLIT_SET} fold assignment (git-tracked, 0 writers)",
+                  "a complete checkout — REPRODUCING.md B.3: never regenerate it")
+    wsi_oof = Need(arms.CLAM_OOF, "split_*_results.pkl",
+                   f"out-of-fold WSI probabilities from {arms.WSI_BASELINE_RUN}",
+                   "dp-train experiment=pam50_wsi_final   (10 folds on one GPU)")
+    cptac_wsi = Need(arms.CPTAC_WSI_PROBS, None,
+                     "the external WSI arm (378 CPTAC slides -> 114 cases)",
+                     "dp-cptac phase=all")
+
+    if action == "cnv_wsi_fusion":
+        needed = [cptac_wsi, cptac_cnv, tcga_cnv, tcga_labels]
+        if bool(cfg.analysis.internal):
+            needed.append(wsi_oof)
+        return needed
+    if action == "stack_wsi_cnv":
+        return [wsi_oof, splits, tcga_cnv, tcga_labels, cptac_wsi, cptac_cnv]
+    if action == "cnv_controls":
+        return [tcga_cnv, tcga_labels, cptac_wsi, cptac_cnv, wsi_oof]
+    if action == "make_cnv_tabular":
+        cohort = str(cfg.analysis.cohort)
+        needed = []
+        if cohort in ("tcga", "both"):
+            needed += [tcga_cnv, tcga_labels, clam_manifest, splits]
+        if cohort in ("cptac", "both"):
+            needed += [cptac_cnv, cptac_labels]
+        return needed
+    if action == "compare_fusion_ladder":
+        # `tools/compare_fusion_ladder.py` is USER-OWNED and is not edited by this
+        # refactor. Its `RESULTS` is its own literal — `Path(__file__).parent.parent
+        # / ".scratch/results"` — rather than `paths.results_root`, so the check has
+        # to mirror that literal or it would vouch for a directory the script never
+        # opens. The five ladder arms are NOT required: the script prints
+        # "(skipping <mode>: ... not found)" for each missing one and carries on.
+        ladder_results = Path(str(cfg.paths.repo_root)) / ".scratch" / "results"
+        return [
+            Need(ladder_results / arms.WSI_BASELINE_RUN, "split_*_results.pkl",
+                 "per-fold WSI-only predictions — the bar every ladder arm is read against",
+                 "dp-train experiment=pam50_wsi_final   (10 folds on one GPU)"),
+            splits, tcga_cnv, tcga_labels,
+        ]
+    return []
+
+
+def check_preconditions(cfg: DictConfig, action: str) -> list[str]:
+    """Every missing input for `action`, described, before anything is created."""
+    problems = []
+    for need in _needs(cfg, action):
+        if need.pattern is None:
+            if not need.path.exists():
+                problems.append(f"missing {need.path}\n      {need.what}\n"
+                                f"      produced by: {need.produced_by}")
+        elif not need.path.is_dir():
+            problems.append(f"missing directory {need.path}\n      {need.what}\n"
+                            f"      produced by: {need.produced_by}")
+        elif not any(need.path.glob(need.pattern)):
+            problems.append(f"no {need.pattern} in {need.path}\n      {need.what}\n"
+                            f"      produced by: {need.produced_by}")
+    return problems
 
 
 # --------------------------------------------------------------------------- #
@@ -641,7 +741,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr)
             return 2
 
-    args = build_parser().parse_args(raw)
+    # `parse_intermixed_args`, not `parse_args`: with a single positional followed
+    # by `overrides` (nargs="*"), argparse fills both from the FIRST run of
+    # positional tokens, so `dp-analysis cnv_wsi_fusion --no-run-dir
+    # analysis.internal=true` left `analysis.internal=true` with nowhere to go and
+    # died with "unrecognized arguments" — while the same tokens in the other order
+    # worked. An argument-order trap in a CLI whose flags and overrides are
+    # naturally typed in either order.
+    args = build_parser().parse_intermixed_args(raw)
     if args.action == "list":
         return _list_actions()
 
@@ -670,6 +777,21 @@ def _run(args: argparse.Namespace) -> int:
     if args.show_config:
         print(OmegaConf.to_yaml(cfg, resolve=True), end="")
         return 0
+
+    # BEFORE the run directory, deliberately. A run directory is a claim that a
+    # run happened; one holding an empty `output.txt` and a `run_metadata.json`
+    # saying `status: 1` is a misleading record of an analysis that never started,
+    # and `.scratch/analysis/<action>/` would accumulate one per attempt. Nothing
+    # has been created at this point, so aborting here leaves the tree untouched.
+    problems = check_preconditions(cfg, args.action)
+    if problems:
+        print(f"dp-analysis {args.action} needs inputs that are not on this machine; "
+              "nothing was run:", file=sys.stderr)
+        for problem in problems:
+            print(f"  {problem}", file=sys.stderr)
+        print("\nREPRODUCING.md walks the acquisition order; `dp-data verify-artifacts` "
+              "checks a downloaded bundle.", file=sys.stderr)
+        return 1
 
     if args.no_run_dir:
         return DISPATCH[args.action](cfg, None)
