@@ -94,12 +94,18 @@ the parity check.
 ### 0. Before anything else
 
 ```bash
-make install        # pip install -e '.[dev]'
-dp-config validate  # paths absolute, tracked inputs present, ClamConf vs CLAM's parser, topk
-make smoke          # synthetic end-to-end dp-train: no real data, no GPU, minutes
+pip install -e '.[dev]'
+dp-config validate    # paths absolute, tracked inputs present, ClamConf vs CLAM's parser, topk
+dp-config sync-check  # the schema-drift check alone
 ```
 
-Five make targets, fixed contract: `install`, `smoke`, `test`, `check-paths`, `reference`.
+**There is no test suite, no Makefile and no automated path gate** — a pytest suite, a synthetic
+smoke run and a `check-paths` gate were built and then deliberately reverted (commit `0c38c14`), so
+`dp-config validate` and `dp-config sync-check` are the only automated checks. Two things this costs,
+worth knowing before editing config: nothing re-verifies that `dpcode/conf/experiment/*` still
+reproduces the original wrappers, and nothing enforces the no-absolute-paths rule. The pre-refactor
+wrappers are kept byte-identical under `tests/legacy_wrappers/tools/` so the argv comparison can be
+redone by hand against `dp-train --dry-run`.
 
 ### 1. CNV features (already on disk; re-run only to refresh)
 ```bash
@@ -530,8 +536,7 @@ dataset material it carried is preserved at `docs/parked-cohorts/histology-hsi-b
 ## Environment
 
 ```bash
-make install               # pip install -e '.[dev]' — the only correct install
-pip install -e '.[dev]'    # the same thing without make
+pip install -e '.[dev]'    # the only correct install
 ```
 - Python **3.10 or 3.11** (`torch==2.0.1` has no cp312 wheels). `python`/`pip` already resolve to
   `/opt/venv` here — no `source` needed. Re-check `command -v python` if anything looks like a

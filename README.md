@@ -58,7 +58,7 @@ no PyPI fallback and is required by the frozen WSI baseline's `--inst_loss svm`)
 ```bash
 git clone https://github.com/peterhubina/dp-code.git
 cd dp-code
-make install          # == pip install -e '.[dev]'
+pip install -e '.[dev]'
 ```
 
 Editable is not a preference. A non-editable `pip install .` copies `project/` and `tools/` into
@@ -70,11 +70,20 @@ Check the install before downloading anything:
 
 ```bash
 dp-config validate    # paths, tracked inputs, CLAM-schema drift, the topk dependency
-make smoke            # synthetic end-to-end run: no real data, no GPU, minutes
+dp-config sync-check  # ClamConf still matches CLAM's real 52-flag parser
 ```
 
 `dp-config validate` on a fresh clone prints a `not acquired :` line listing the data trees you do
 not have yet. That is expected, not a failure.
+
+**There is no automated test suite.** The repository ships no `pytest` suite and no smoke run, so
+`dp-config validate` and `dp-config sync-check` are the whole of the automated checking available to
+you. In particular, nothing verifies that the configuration reproduces the original shell wrappers —
+that equivalence was established once, by comparing parsed CLAM argument namespaces for every
+wrapper, but it is not re-checked on any change. Treat edits to `dpcode/conf/experiment/` and
+`dpcode/conf/clam/base.yaml` accordingly: compare `dp-train --dry-run` output against the frozen
+wrappers in `tests/legacy_wrappers/tools/`, which are kept byte-identical to their pre-refactor form
+for exactly that purpose.
 
 **Docker is not a supported route.** `docker/` targets one institution's cluster: the base image's
 availability is unverified, `docker/run.sh` bind-mounts host paths that will not exist on your

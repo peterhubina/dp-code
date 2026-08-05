@@ -224,9 +224,9 @@ required — both cohorts ship pre-extracted.
 
 ```bash
 # 0. install and check, before downloading 100 GB
-make install
+pip install -e '.[dev]'
 dp-config validate
-make smoke
+dp-config sync-check
 ```
 
 ```bash
@@ -409,13 +409,29 @@ hidden by it.
 
 | command | what it proves |
 |---|---|
-| `make install` | `pip install -e '.[dev]'` — the only correct install (see README) |
+| `pip install -e '.[dev]'` | the only correct install (see README for why editable is not a preference) |
 | `dp-config validate` | every `paths.*` value absolute, tracked inputs present, `ClamConf` in sync with CLAM's real parser, and `topk` importable when `inst_loss=svm` |
 | `dp-config sync-check` | just the schema-drift check: `in sync: 52 CLAM flags in main.py, ClamConf and clam/base.yaml` |
-| `make smoke` | a synthetic end-to-end `dp-train` on generated features: no real data, no GPU, minutes |
-| `make test` | the full suite, including the wrapper-parity check |
-| `make check-paths` | no absolute path literals in tracked code, config or documentation |
-| `make reference` | regenerates `docs/config-reference.md`; it is generated, never hand-written |
+| `dp-config show experiment=…` | the fully resolved configuration for an experiment, before it runs |
+| `dp-train --dry-run experiment=…` | the exact CLAM command an experiment would issue, without creating a run directory |
+| `dp-config reference -o docs/config-reference.md` | regenerates the config reference; it is generated, never hand-written |
 
 `dp-config validate` on a fresh clone prints a `not acquired :` line naming the data trees you have
 not downloaded. That is information, not a failure.
+
+### What is not checked automatically
+
+There is no `pytest` suite, no synthetic smoke run and no automated absolute-path gate in this
+repository. Three consequences worth stating plainly rather than discovering later:
+
+- **Wrapper equivalence is not re-verified on change.** That the configuration reproduces the
+  original shell wrappers was established once, by executing each pre-refactor wrapper under a
+  stubbed interpreter and comparing parsed CLAM argument namespaces field for field. Nothing re-runs
+  that comparison. The frozen wrappers are kept byte-identical in `tests/legacy_wrappers/tools/` so
+  the comparison can be redone by hand against `dp-train --dry-run`.
+- **Nothing enforces the no-absolute-paths rule.** `grep -rI "/workspace/dp-code"` over tracked code
+  and configuration is the manual equivalent; historical run artifacts under `results/hydra/`,
+  `project/CLAM/tmp_eval/`, `project/CLAM/results/` and `docs/implementation-research/` legitimately
+  contain the string, because they are records of what was run.
+- **No end-to-end path is exercised cheaply.** The smallest real check is a short `dp-train` on a
+  real fold, which needs the WSI features.
