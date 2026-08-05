@@ -1,0 +1,59 @@
+# Remote endpoints and dataset identifiers.
+#
+# These live in config rather than in the download scripts so that the pinning
+# situation is VISIBLE. Two entries are not pinned and cannot currently be made
+# reproducible from the remote alone:
+#
+#   * `cbioportal_datahub_ref: master` — a moving branch, not a release tag.
+#   * `ucsc_refgene_file` — UCSC's hg38 refGene is a live table and RefSeq
+#     annotation changes over time.
+#
+# Consequence: the 39 arm-level CNV values are reproducible only because
+# `${paths.cnv_reference_dir}/gene_arm_hg38.csv` is cached on disk and the cache
+# short-circuits the fetch. That cache is gitignored. Changing either value above
+# changes the gene->arm map and therefore the CNV features.
+#
+# Access: everything here is open HTTP except the two HuggingFace repositories at
+# the bottom, which are gated and need an approved `HF_TOKEN`.
+
+# --- cBioPortal -------------------------------------------------------------
+cbioportal_datahub_base: https://media.githubusercontent.com/media/cBioPortal/datahub
+cbioportal_datahub_ref: master
+cbioportal_datahub_url: ${.cbioportal_datahub_base}/${.cbioportal_datahub_ref}/public
+cbioportal_api_base: https://www.cbioportal.org/api
+tcga_study_id: brca_tcga_pan_can_atlas_2018
+cptac_study_id: brca_cptac_2020
+
+# --- UCSC hg38 annotation ----------------------------------------------------
+ucsc_goldenpath_base: https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database
+ucsc_cytoband_file: cytoBand.txt.gz
+ucsc_refgene_file: refGene.txt.gz
+
+# --- GDC (open access: no token, no dbGaP application) -----------------------
+gdc_api_base: https://api.gdc.cancer.gov
+
+# --- TCIA PathDB (CPTAC slides; plain HTTPS, no Aspera plugin) ---------------
+pathdb_base: https://pathdb.cancerimagingarchive.net
+
+# --- Zenodo (CPTAC pan-cancer clinical table) --------------------------------
+zenodo_record_id: '8394329'
+zenodo_files_url: https://zenodo.org/api/records/${.zenodo_record_id}/files
+
+# --- HGNC (dormant RNA harmonisation arm) ------------------------------------
+hgnc_complete_set_url: https://storage.googleapis.com/public-download-files/hgnc/tsv/tsv/hgnc_complete_set.txt
+
+# --- TCGA-CDR supplement (Liu 2018) ------------------------------------------
+# An Elsevier CDN link fetched with a spoofed User-Agent; it may rot or block.
+# The xlsx and the label CSV it produces are both tracked, so this is optional.
+tcga_cdr_xlsx_url: https://ars.els-cdn.com/content/image/1-s2.0-S0092867418302290-mmc1.xlsx
+
+# --- UCSC Xena (LEGACY RNA route, superseded by the GDC tables) --------------
+xena_hub_base: https://tcga-xena-hub.s3.us-east-1.amazonaws.com/download
+
+# --- GATED HuggingFace repositories ------------------------------------------
+# Access is by request on the hub. `hf_features_repo` carries the pre-extracted
+# UNI2-h features for BOTH cohorts and is the only gated thing the headline table
+# needs; `hf_encoder_repo` is the encoder itself and is needed only to tile new
+# slides (the parked cohorts).
+hf_features_repo: MahmoodLab/UNI2-h-features
+hf_encoder_repo: MahmoodLab/UNI2-h

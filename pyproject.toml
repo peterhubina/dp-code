@@ -1,0 +1,165 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dp-code"
+version = "0.1.0"
+description = "PAM50 molecular-subtype classification from H&E whole-slide images fused with arm-level copy-number variation (TCGA-BRCA -> CPTAC-BRCA)."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "peterhubina", email = "peter.hubina1@gmail.com" }]
+keywords = ["computational-pathology", "PAM50", "breast-cancer", "multiple-instance-learning", "CLAM"]
+
+# NO `license` FIELD ON PURPOSE. The repository currently carries an unfilled
+# Apache-2.0 `LICENCE` whose copyright line is supplied by the old README and
+# names the HistologyHSI-BC dataset authors, while `project/CLAM` and
+# `project/MCAT` are GPLv3 and CLAM is modified in place. Declaring a licence
+# here would assert a resolution to that conflict that nobody has made. See the
+# repository documentation; this is a decision for the author and supervisor.
+
+# ---------------------------------------------------------------------------
+# Curated, pinned runtime dependencies.
+#
+# Built from the 28 distributions that tracked code and tracked notebooks
+# actually import (inventory report 06 section 1.2), pinned to the versions
+# installed in the environment that produced every published number, with the
+# three corrections that audit found:
+#
+#   * opencv: `opencv-python` and `opencv-python-headless` were BOTH pinned and
+#     install the same `cv2` module, so install order decided which one won.
+#     Headless is what `import cv2` actually resolves to here, so headless is
+#     what is pinned and the non-headless pin is dropped. Headless also drops the
+#     host `libGL.so.1` / `libglib` requirement.
+#   * pillow: the old freeze pinned 12.1.1 while 12.3.0 is installed and was used
+#     for every published number. The pin follows reality.
+#   * openpyxl and topk are kept even though neither is a plain `import`:
+#     openpyxl is reached only via `pd.read_excel(engine="openpyxl")`
+#     (tools/fetch_tcga_labels.py), and `topk` (the smooth-topk git pin) is
+#     required by `--inst_loss svm`, i.e. by the frozen WSI baseline. Dropping
+#     either silently breaks the headline reproduction. `topk` needs `git` and
+#     network at install time; it has no PyPI fallback.
+#
+# hydra-core, omegaconf and pytest are pinned exactly; unpinned they drift to
+# 1.4.0.dev* / 2.4.0.dev*. wandb stays at 0.15.3 — 0.20+ removes
+# config_exclude_keys and changes `init`.
+#
+# `torch==2.0.1` resolves to the cu117 manylinux wheel from plain PyPI (the
+# interpreter reports 2.0.1+cu117); no --extra-index-url is required, but the
+# host needs an NVIDIA driver new enough for CUDA 11.7.
+#
+# Deliberately NOT declared, with reasons (they are imports with no live path):
+#   transformers   - only `models/builder.py`'s conch_v1_5 branch; UNI2-h is used
+#   conch          - GitHub-only, only the conch_v1 encoder branch
+#   torch-geometric- project/MCAT only (dormant)
+#   torchsummary   - project/base legacy scaffold only
+#   nmslib         - an MCAT notebook only
+# `scikit-survival` and `lifelines` are in the `survival` extra below.
+#
+# Non-Python dependency, undeclarable here: `project/data/pam50.R` needs R with
+# Bioconductor (TCGAbiolinks). It produced the PAM50 labels; the label table it
+# produced is tracked, so reproducing the labels is optional.
+# ---------------------------------------------------------------------------
+dependencies = [
+  "h5py==3.16.0",
+  "huggingface-hub==1.6.0",
+  "hydra-core==1.3.4",
+  "matplotlib==3.10.8",
+  "networkx==3.1",
+  "numpy==1.26.4",
+  "omegaconf==2.3.0",
+  "opencv-python-headless==4.11.0.86",
+  "openpyxl==3.1.5",
+  "openslide-bin==4.0.0.10",
+  "openslide-python==1.4.3",
+  "pandas==2.3.3",
+  "pillow==12.3.0",
+  "PyYAML==6.0.1",
+  "requests==2.31.0",
+  "scikit-learn==1.7.2",
+  "scipy==1.15.3",
+  "seaborn==0.13.2",
+  "spectral==0.24",
+  "tensorboardX==2.6.4",
+  "tifffile==2025.5.10",
+  "timm==1.0.24",
+  "topk @ git+https://github.com/oval-group/smooth-topk.git@12c1645f187e2fa0c05f47bf1fe48864d4bd2707",
+  "torch==2.0.1",
+  "torchvision==0.15.2",
+  "tqdm==4.66.1",
+  "umap-learn==0.5.11",
+  "wandb==0.15.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.4.2"]
+
+# The survival thread is dormant AND doubly broken: `scikit-survival` has never
+# been installed in this environment (`tools/{train,eval}_survival.py` fail at
+# import with `No module named 'sksurv'`), and the survival Hydra config points
+# `embeddings_dir` at a path that does not exist. `scikit-survival` is therefore
+# declared UNPINNED and unverified — no version of it ever produced a number
+# here, so pinning one would be a fabricated reproduction claim.
+survival = ["lifelines==0.30.0", "scikit-survival"]
+
+[project.urls]
+Repository = "https://github.com/peterhubina/dp-code"
+
+[project.scripts]
+dp-train = "dpcode.cli.train:main"
+dp-evaluate = "dpcode.cli.evaluate:main"
+dp-analysis = "dpcode.cli.analysis:main"
+dp-data = "dpcode.cli.data:main"
+dp-cptac = "dpcode.cli.cptac:main"
+dp-config = "dpcode.cli.config:main"
+
+# ---------------------------------------------------------------------------
+# `project` and `tools` have no top-level `__init__.py` (PEP-420 namespace
+# packages). Until now the ONLY thing that made `import project.survival` or
+# `import tools.pam50_arms` work was `ENV PYTHONPATH=/workspace/dp-code` in
+# docker/Dockerfile:26 — outside the container every such import failed.
+# Listing them here makes `pip install -e .` do that job instead.
+#
+# They are enumerated explicitly rather than globbed: `include = ["project*"]`
+# with implicit-namespace discovery matches 1822 directories, because every
+# committed W&B run directory and every splits/ folder is a valid namespace
+# package name.
+#
+# INSTALL EDITABLE. `pip install -e .` is the documented setup step and the only
+# one that is correct. A non-editable `pip install .` copies the `project` and
+# `tools` modules into site-packages WITHOUT their sibling data directories
+# (`project/CLAM/dataset_csv/`, `project/CLAM/splits/`, `tools/data/`), which
+# those modules reach by relative path — so the copies would import and then read
+# the wrong files, or none. It would also shadow any other top-level `project` or
+# `tools` package in the environment.
+# ---------------------------------------------------------------------------
+[tool.setuptools.packages.find]
+where = ["."]
+namespaces = true
+include = [
+  "dpcode",
+  "dpcode.*",
+  "project",
+  "project.CLAM",
+  "project.CLAM.dataset_modules",
+  "project.CLAM.models",
+  "project.CLAM.utils",
+  "project.CLAM.vis_utils",
+  "project.CLAM.wsi_core",
+  "project.base",
+  "project.data",
+  "project.loggers",
+  "project.survival",
+  "tools",
+  "tools.cptac",
+  "tools.diagnostics",
+  "tools.hsi_bc",
+  "tools.nou",
+  "tools.rna",
+]
+
+[tool.setuptools.package-data]
+dpcode = ["conf/**/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

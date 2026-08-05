@@ -1,0 +1,64 @@
+# Primary config for every dpcode entry point.
+#
+# Composition order (Hydra merges top to bottom):
+#   1. dp_config_schema   the dataclasses in `dpcode/schema.py` — types and the
+#                         closed key set, so a typo'd override dies here
+#   2. _self_             this file's own values (the `run` and `hydra` blocks)
+#   3. the config groups  paths / sources / clam / wandb, which therefore win
+#
+# `_self_` is written explicitly and placed second on purpose: leaving it out
+# makes the merge order depend on the Hydra version, and the 1.0 -> 1.1 upgrade
+# guide's entire remedy for that is "add `_self_` to your Defaults List".
+#
+# The `experiment`, `analysis`, `evaluate`, `acquire` and `cptac` groups are added
+# to this list by the entry points that own them; `RootConf` already reserves a
+# package for each so struct mode does not reject them.
+
+defaults:
+  - dp_config_schema
+  - _self_
+  - paths: default
+  - sources: default
+  - clam: base
+  # Quoted: bare `off` is a YAML 1.1 boolean.
+  - wandb: "off"
+
+run:
+  # Names the run directory and the W&B run. Experiment configs set this;
+  # `unnamed` is a placeholder, not a suggestion.
+  name: unnamed
+  # Seeds dpcode's own entry points (analysis, bootstraps). CLAM trains with
+  # `clam.seed`, which is deliberately separate so `clam/base.yaml` stays a
+  # verbatim record of CLAM's defaults.
+  seed: 1
+  # Refuse to write into a run directory that already holds `summary.csv` or an
+  # `s_*_checkpoint.pt`. `.scratch` is gitignored and unrecoverable; the five
+  # completed ladder arms cost 2h38m of GPU time.
+  overwrite: false
+  # Permit `+key=…` / `~key` overrides. Off by default — see
+  # `dpcode.schema.reject_appended_overrides`.
+  allow_config_surgery: false
+
+hydra:
+  job:
+    # NEVER true. Every path in this tree descends from an absolute
+    # `paths.repo_root`, so chdir is irrelevant rather than load-bearing — but a
+    # single relative path plus `chdir: true` would silently resolve inside the
+    # run's output directory and the run would "succeed" on the wrong data.
+    chdir: false
+    config:
+      override_dirname:
+        exclude_keys: [run.name]
+  run:
+    # Absolute: a relative `run.dir` is resolved against the INVOCATION cwd, so it
+    # would scatter run directories wherever the user happened to `cd`.
+    # `dp-train` overrides this to CLAM's own run directory
+    # (`${paths.results_root}/${clam.exp_code}_s${clam.seed}`) so a training run
+    # has exactly one self-describing directory.
+    dir: ${paths.analysis_dir}/${run.name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ${paths.scratch_root}/multirun/${run.name}/${now:%Y-%m-%d_%H-%M-%S}
+    # The `${hydra.job.num}_` prefix is mandatory, not decorative: with
+    # `exclude_keys` set, two jobs of a sweep can share an `override_dirname` and
+    # the second would silently overwrite the first.
+    subdir: ${hydra.job.num}_${hydra.job.override_dirname}

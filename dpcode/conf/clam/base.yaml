@@ -1,0 +1,82 @@
+# CLAM's own argparse defaults, verbatim.
+#
+# Generated from the real parser in `project/CLAM/main.py` (52 arguments,
+# extracted by `dpcode/clam_args.py` without importing that module) and kept in
+# sync by `dp-config sync-check`. Nothing here is a dpcode opinion: every value
+# is what `python main.py` uses when the flag is omitted.
+#
+# That is the point. An experiment config layered on top of this file shows, by
+# diff, exactly which knobs a run turned. If this file drifted towards "sensible
+# project defaults", a legacy wrapper and its Hydra replacement could silently
+# train different models while both looking correct.
+#
+# Two consequences of CLAM's own behaviour that this file cannot express:
+#   * `results_dir` is not the run directory. CLAM appends `<exp_code>_s<seed>`
+#     to it (main.py:407) using `os.mkdir`, not `makedirs`, so the parent must
+#     already exist.
+#   * `split_dir` is a NAME, not a path. CLAM prefixes it with the literal
+#     `splits/` (main.py:412,414) and asserts it relative to CWD, which is why
+#     every entry point runs `main.py` with cwd `project/CLAM`.
+
+# --- generic training settings (main.py:120-153) ---
+data_root_dir: null
+embed_dim: 1024
+max_epochs: 200
+lr: 0.0001
+label_frac: 1.0
+reg: 1e-05
+seed: 1
+k: 10
+k_start: -1
+k_end: -1
+results_dir: './results'
+split_dir: null
+log_data: false
+testing: false
+early_stopping: false
+patience: 10
+opt: adam
+drop_out: 0.25
+bag_loss: ce
+model_type: clam_sb
+exp_code: null
+weighted_sample: false
+model_size: small
+task: null
+
+# --- multimodal fusion options, this project's fork (main.py:155-194) ---
+fusion_mode: null
+film_rank: 32
+modality_dropout: 0.0
+tabular_group_spec: null
+tabular_csv: null
+tabular_case_id_col: case_id
+tabular_label_col: label
+tabular_hidden_dim: 256
+tabular_num_layers: 2
+tabular_top_n_features: 0
+fusion_hidden_dim: 128
+pretrained_wsi_ckpt: null
+freeze_wsi_branch: false
+pretrained_rna_ckpt: null
+freeze_rna_branch: false
+rna_hidden_dims: '1024,512'
+rna_dropout: 0.4
+residual_scale: 0.2
+
+# --- CLAM-specific options (main.py:196-204) ---
+# Inert whenever `fusion_mode` is set: core_utils.py:434 routes multimodal runs
+# to `train_loop`, which never invokes instance clustering. Recorded, not obeyed.
+no_inst_cluster: false
+inst_loss: null
+subtyping: false
+bag_weight: 0.7
+B: 8
+
+# --- CLAM's own W&B flags (main.py:205-209) ---
+# Distinct from the `wandb` config group: these are argv, that group is dpcode's.
+wandb: false
+wandb_project: clam-subtyping
+wandb_entity: null
+wandb_tags: null
+log_heatmaps: 0
