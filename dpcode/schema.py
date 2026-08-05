@@ -34,10 +34,11 @@ __all__ = [
     "SourcesConf",
     "ClamConf",
     "FusionConf",
-    "WandbConf",
+    "TrackingConf",
     "RunConf",
     "RootConf",
     "CONFIG_SCHEMA_NAME",
+    "PATH_INTERPOLATION_FIELDS",
     "register_configs",
     "reject_appended_overrides",
 ]
@@ -45,6 +46,21 @@ __all__ = [
 #: Name under which :class:`RootConf` is stored; referenced from the defaults
 #: list of ``dpcode/conf/config.yaml``.
 CONFIG_SCHEMA_NAME = "dp_config_schema"
+
+#: The three ``clam`` fields whose value in ``dpcode/conf/clam/base.yaml`` is an
+#: interpolation of the ``paths`` group rather than CLAM's own argparse default
+#: (DESIGN-ADDENDUM A5). CLAM's true defaults for them stay recorded on
+#: :class:`ClamConf` (``None`` / ``'./results'`` / ``None``), which is what
+#: ``dp-config sync-check`` and ``tests/test_schema.py`` compare against the real
+#: parser; ``base.yaml`` is exempted from that value comparison and required
+#: instead to interpolate ``paths``.
+#:
+#: The reason they cannot stay literals: ``clam.results_dir`` decides where CLAM
+#: writes checkpoints, while ``paths.results_root`` decides where dpcode writes
+#: ``config.resolved.yaml`` / ``run_metadata.json`` / ``metrics.json``. Two
+#: literals mean one override splits a run across two trees, silently, with
+#: ``run_metadata.json`` naming the wrong directory.
+PATH_INTERPOLATION_FIELDS = ("data_root_dir", "results_dir", "split_dir")
 
 
 @dataclass
@@ -226,8 +242,14 @@ class FusionConf:
 
 
 @dataclass
-class WandbConf:
-    """The dpcode-level W&B settings, selected by the `wandb` config group.
+class TrackingConf:
+    """The dpcode-level W&B settings, selected by the `tracking` config group.
+
+    The group is `tracking`, not `wandb`, for a mechanical reason: `.gitignore:68`
+    is a bare `wandb` pattern, which matches a directory of that name at any
+    depth, so `dpcode/conf/wandb/` could never be committed and a fresh clone
+    would fail to compose. `.gitignore` is left untouched — anchoring the pattern
+    would un-ignore `project/CLAM/wandb/`'s 349 committed run directories.
 
     This is NOT the same thing as `clam.wandb*`. CLAM's own W&B flags are part of
     its argparse surface and are rendered into argv; this node is what dpcode's
@@ -270,7 +292,7 @@ class RootConf:
     sources: SourcesConf = field(default_factory=SourcesConf)
     clam: ClamConf = field(default_factory=ClamConf)
     fusion: FusionConf = field(default_factory=FusionConf)
-    wandb: WandbConf = field(default_factory=WandbConf)
+    tracking: TrackingConf = field(default_factory=TrackingConf)
     run: RunConf = field(default_factory=RunConf)
 
     # Placeholders for the config groups owned by the other tracks, so their

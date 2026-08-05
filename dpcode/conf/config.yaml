@@ -4,7 +4,7 @@
 #   1. dp_config_schema   the dataclasses in `dpcode/schema.py` — types and the
 #                         closed key set, so a typo'd override dies here
 #   2. _self_             this file's own values (the `run` and `hydra` blocks)
-#   3. the config groups  paths / sources / clam / wandb, which therefore win
+#   3. the config groups  paths / sources / clam / tracking, which therefore win
 #
 # `_self_` is written explicitly and placed second on purpose: leaving it out
 # makes the merge order depend on the Hydra version, and the 1.0 -> 1.1 upgrade
@@ -20,8 +20,13 @@ defaults:
   - paths: default
   - sources: default
   - clam: base
+  # The W&B group is named `tracking`, not `wandb`: `.gitignore:68` is a bare
+  # `wandb`, which matches a directory of that name at any depth, so
+  # `dpcode/conf/wandb/` could never be committed and a clean clone would fail to
+  # compose. `.gitignore` is deliberately not edited (anchoring the pattern would
+  # un-ignore `project/CLAM/wandb/`'s 349 committed run directories).
   # Quoted: bare `off` is a YAML 1.1 boolean.
-  - wandb: "off"
+  - tracking: "off"
 
 run:
   # Names the run directory and the W&B run. Experiment configs set this;
@@ -50,13 +55,42 @@ hydra:
       override_dirname:
         exclude_keys: [run.name]
   run:
-    # Absolute: a relative `run.dir` is resolved against the INVOCATION cwd, so it
-    # would scatter run directories wherever the user happened to `cd`.
-    # `dp-train` overrides this to CLAM's own run directory
-    # (`${paths.results_root}/${clam.exp_code}_s${clam.seed}`) so a training run
-    # has exactly one self-describing directory.
-    dir: ${paths.analysis_dir}/${run.name}/${now:%Y-%m-%d_%H-%M-%S}
+    # Hydra's own output directory. It is a SCRATCH location and must never be
+    # pointed at a CLAM results directory — not by this file, not by `dp-train`,
+    # not by an override.
+    #
+    # Why: Hydra creates `hydra.run.dir` and writes `.hydra/{config,hydra,
+    # overrides}.yaml` plus the job log BEFORE the task function is called
+    # (`hydra/core/utils.py:146,179-181`; the task runs at `:185`). An overwrite
+    # guard inside the task function therefore fires only after Hydra has already
+    # written four files into the directory. Aimed at
+    # `${paths.results_root}/${clam.exp_code}_s${clam.seed}`, a typo'd `exp_code`
+    # would write into — and on a second run overwrite the provenance of — one of
+    # the five completed, gitignored, unrecoverable ladder runs.
+    #
+    # So `dp-train` leaves this alone and instead: (1) rejects `+`/`~` overrides,
+    # (2) computes `${paths.results_root}/${clam.exp_code}_s${clam.seed}` itself,
+    # (3) calls `dpcode.runinfo.assert_run_dir_writable` while nothing has been
+    # written yet, (4) writes `config.resolved.yaml`, `clam_argv.json` and the
+    # opening `run_metadata.json` there, (5) dispatches CLAM, (6) writes
+    # `metrics.json`, finalises the metadata and copies this directory's
+    # `.hydra/` in beside them with `dpcode.runinfo.copy_hydra_outputs`.
+    #
+    # Absolute, because a relative `run.dir` is resolved against the INVOCATION
+    # cwd and would scatter run directories wherever the user happened to `cd`.
+    dir: ${paths.scratch_root}/hydra/${run.name}/${now:%Y-%m-%d_%H-%M-%S}
   sweep:
+    # Same reasoning under `--multirun`, where `hydra.run.dir` is ignored
+    # entirely and the basic launcher uses `hydra.sweep.dir`/`subdir`. Because
+    # step (2) above derives the run directory from `clam.exp_code` and
+    # `clam.seed` rather than from Hydra's output directory, `-m` and single-run
+    # get exactly the same contract.
+    #
+    # `${run.name}` here is a known wart: `BasicLauncher.launch` mkdirs
+    # `hydra.sweep.dir` from the BASE config while each job re-resolves it from
+    # its own config, so a sweep that overrides `run.name` per job creates one
+    # empty base directory alongside the per-job ones. Harmless — nothing that
+    # matters is written there — but do not add anything load-bearing to it.
     dir: ${paths.scratch_root}/multirun/${run.name}/${now:%Y-%m-%d_%H-%M-%S}
     # The `${hydra.job.num}_` prefix is mandatory, not decorative: with
     # `exclude_keys` set, two jobs of a sweep can share an `override_dirname` and

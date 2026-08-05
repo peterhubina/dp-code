@@ -4,14 +4,20 @@ Everything described here is already true of `project/CLAM`. This module writes 
 down so a run directory tells its reader what was and was not controlled; it does
 not "improve" any of it.
 
-That restriction is not stylistic. Adding `worker_init_fn`, calling
-`torch.use_deterministic_algorithms(True)` or setting `CUBLAS_WORKSPACE_CONFIG`
-would change float accumulation order and therefore change the published numbers,
-while looking like a reproducibility improvement. It is forbidden here.
+That restriction is not stylistic. Calling `torch.use_deterministic_algorithms(True)`
+or setting `CUBLAS_WORKSPACE_CONFIG` changes which kernels run, and therefore float
+accumulation order and therefore the published numbers, while looking like a
+reproducibility improvement. Adding a `worker_init_fn` is a weaker case — the
+feature-loading Dataset is a pure h5 read that uses neither `numpy.random` nor
+`random`, and torch already derives worker seeds from the seeded parent generator —
+but it is equally forbidden, because "probably inert" is not a basis for touching
+the code path behind a published table.
 
 The honest claim, which the reproduction documentation must make in these terms:
-seeds are fixed and fold assignments are fixed, so a re-run reproduces the
-reported metrics to roughly 1e-3 — **not** bitwise.
+seeds and fold assignments are fixed; run-to-run variance has **not** been
+measured; bitwise reproducibility is neither claimed nor achievable here. No
+tolerance is quoted, because nobody computed one — quoting a number nobody
+measured is the same class of error this project's own reporting rules criticise.
 """
 
 from __future__ import annotations
@@ -23,16 +29,18 @@ __all__ = [
     "DETERMINISM_CLAIM",
     "SEEDING_SITES",
     "SEEDED_GENERATORS",
+    "SEEDING_WITHOUT_EFFECT",
     "NOT_DONE",
     "RESIDUAL_NONDETERMINISM",
     "describe_determinism",
 ]
 
 DETERMINISM_CLAIM = (
-    "Seeds and fold assignments are fixed, so a re-run reproduces reported metrics "
-    "to roughly 1e-3. Bitwise reproduction is NOT claimed: no deterministic-algorithm "
-    "mode is enabled and nn.MultiheadAttention (cross_attention, coattn) is not "
-    "bitwise deterministic on CUDA."
+    "Seeds and fold assignments are fixed. Run-to-run variance has NOT been measured, "
+    "so no tolerance is quoted. Bitwise reproducibility is neither claimed nor "
+    "achievable here: nn.MultiheadAttention (used by fusion_mode=cross_attention and "
+    "fusion_mode=coattn) is not bitwise deterministic on CUDA, and neither "
+    "torch.use_deterministic_algorithms nor CUBLAS_WORKSPACE_CONFIG is set."
 )
 
 #: Where the seed is applied, and how often.
@@ -55,16 +63,33 @@ SEEDING_SITES = (
     },
 )
 
-#: What `seed_torch` sets.
+#: What `seed_torch` sets AND that takes effect. `PYTHONHASHSEED` is deliberately
+#: not in this list — see :data:`SEEDING_WITHOUT_EFFECT`.
 SEEDED_GENERATORS = (
     "random.seed(seed)",
-    "os.environ['PYTHONHASHSEED'] = str(seed)",
     "numpy.random.seed(seed)",
     "torch.manual_seed(seed)",
     "torch.cuda.manual_seed(seed)        # cuda only",
     "torch.cuda.manual_seed_all(seed)    # cuda only, all visible devices",
     "torch.backends.cudnn.benchmark = False",
     "torch.backends.cudnn.deterministic = True",
+)
+
+#: Statements inside `seed_torch` that do NOT do what their name suggests. Listed
+#: separately so `run_metadata.json` never reports a seed as being "in effect"
+#: when it is not.
+SEEDING_WITHOUT_EFFECT = (
+    {
+        "statement": "os.environ['PYTHONHASHSEED'] = str(seed)",
+        "site": "project/CLAM/main.py:237",
+        "why": (
+            "PYTHONHASHSEED is read by the interpreter at startup. Assigning it "
+            "from inside an already-running interpreter does not re-seed string "
+            "hashing for that process; it only changes the environment CHILD "
+            "processes inherit. Recorded as observed environment (see "
+            "`observed_env`), never as a seed in effect."
+        ),
+    },
 )
 
 #: Deliberately absent from CLAM. Verified by grep over `project/CLAM/**/*.py`:
@@ -123,14 +148,18 @@ def describe_determinism(seed: int | None = None, clam_seed: int | None = None) 
     `observed_env` reports whether the *current process* carries any of the
     environment switches that would change numerics. It is a report, never an
     action: if `CUBLAS_WORKSPACE_CONFIG` is set in the environment, the run is not
-    comparable to the published numbers and the metadata should say so.
+    comparable to the published numbers and the metadata should say so. It is
+    also where `PYTHONHASHSEED` belongs — as what the process inherited, not as
+    something `seed_torch` established.
     """
     return {
         "claim": DETERMINISM_CLAIM,
+        "measured_tolerance": None,
         "run_seed": seed,
         "clam_seed": clam_seed,
         "seeding_sites": [dict(site) for site in SEEDING_SITES],
         "seeded_generators": list(SEEDED_GENERATORS),
+        "seeding_without_effect": [dict(item) for item in SEEDING_WITHOUT_EFFECT],
         "not_done": list(NOT_DONE),
         "residual_nondeterminism": list(RESIDUAL_NONDETERMINISM),
         "observed_env": {

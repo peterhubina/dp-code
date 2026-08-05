@@ -10,13 +10,41 @@ features were actually read. Any claim that a run can be re-run from its saved
 config is false unless a resolved snapshot exists — so `config.resolved.yaml` is
 mandatory here, not polish.
 
-Four files, written next to whatever CLAM writes:
+Four files, written next to whatever CLAM writes, plus a copy of Hydra's own:
 
-    config.resolved.yaml   OmegaConf.to_yaml(cfg, resolve=True)
+    config.resolved.yaml   the resolved config, redacted (see below)
     run_metadata.json      git, environment, seeds, command, timing, exit status,
                            and the `frozen_internals` block below
     clam_argv.json         the exact argv handed to main.py, plus its cwd
     metrics.json           summary.csv, machine-readable
+    .hydra/                copied in from Hydra's own scratch output directory
+
+The order a training entry point must use, and why (DESIGN-ADDENDUM A1):
+
+    1. reject `+`/`~` overrides
+    2. run_dir = clam_run_dir(cfg.clam.results_dir, exp_code, seed)
+    3. assert_run_dir_writable(run_dir, cfg.run.overwrite)   <- nothing written yet
+    4. write_config_snapshot / write_clam_argv / RunMetadata.start
+    5. dispatch CLAM as a subprocess
+    6. write_metrics / RunMetadata.finish / copy_hydra_outputs
+
+Hydra's own `hydra.run.dir` must NOT be the run directory: Hydra creates it and
+writes `.hydra/` and the job log before the task function is ever called, so a
+guard inside the task function fires after the damage. Hence step 6 copies
+`.hydra/` in rather than Hydra writing it there.
+
+Two properties of `config.resolved.yaml` are non-negotiable:
+
+  * it is **redacted**. `resolve=True` expands every `${oc.env:...}`, and this
+    file is meant to be publishable alongside the thesis. `paths.nou_root` names
+    a private institutional cohort and is replaced by a placeholder; so is any
+    credential-shaped key, which is a backstop — credentials are read from the
+    environment at the call site and must never enter the config tree.
+  * it **cannot abort a run**. An `oc.env` interpolation with no default raises
+    `InterpolationResolutionError` when its variable is unset; a snapshot written
+    after a 2h38m ladder arm must not turn that into a failed job. Resolution is
+    therefore per-key, and unresolvable keys are recorded in the file instead of
+    raised.
 
 Plus :func:`assert_run_dir_writable`, which exists because `.scratch` is
 gitignored: five completed ladder arms live there, they cost 2h38m of GPU time,
@@ -47,8 +75,16 @@ __all__ = [
     "METADATA_NAME",
     "CLAM_ARGV_NAME",
     "METRICS_NAME",
+    "HYDRA_SUBDIR",
     "FROZEN_INTERNALS",
+    "REDACTED_KEYS",
+    "REDACTED_PLACEHOLDER",
     "assert_run_dir_writable",
+    "clam_run_dir",
+    "hydra_output_dir",
+    "copy_hydra_outputs",
+    "resolved_container",
+    "redact",
     "write_config_snapshot",
     "write_clam_argv",
     "write_metrics",
@@ -62,6 +98,29 @@ CONFIG_SNAPSHOT_NAME = "config.resolved.yaml"
 METADATA_NAME = "run_metadata.json"
 CLAM_ARGV_NAME = "clam_argv.json"
 METRICS_NAME = "metrics.json"
+HYDRA_SUBDIR = ".hydra"
+
+#: Dotted config keys whose VALUE never appears in a published artifact.
+#: `paths.nou_root` points at the private institutional cohort; naming its
+#: location in a snapshot meant for publication describes that cohort's
+#: internals, which the project's standing rules forbid.
+REDACTED_KEYS = ("paths.nou_root",)
+
+#: Backstop only. No credential is a config key today and none may become one —
+#: `HF_TOKEN` and the W&B API key are read from the environment and `~/.netrc` at
+#: the call site. If one ever leaks into the tree, the snapshot redacts it rather
+#: than publishing it, and says so in its header.
+CREDENTIAL_KEY_SUBSTRINGS = (
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "api_key",
+    "apikey",
+    "credential",
+)
+
+REDACTED_PLACEHOLDER = "<redacted>"
 
 #: Distribution name declared in pyproject.toml. `dependency_versions` reads this
 #: distribution's own requirements, so the pinned list has exactly one home.
@@ -91,12 +150,15 @@ FROZEN_INTERNALS = {
         "value": "-auc",
         "sites": [
             "project/CLAM/utils/core_utils.py:425",
-            "project/CLAM/utils/core_utils.py:711",
-            "project/CLAM/utils/core_utils.py:799",
+            "project/CLAM/utils/core_utils.py:712",
+            "project/CLAM/utils/core_utils.py:800",
         ],
         "note": (
-            "monitor_value = -auc if np.isfinite(auc) else val_loss, so the saved "
-            "checkpoint maximises AUC. Upstream CLAM monitors val_loss."
+            "The two early_stopping(...) calls are at :712 (unimodal) and :800 "
+            "(multimodal); each is preceded by "
+            "`monitor_value = -auc if np.isfinite(auc) else val_loss` on the line "
+            "above (:711, :799). The saved checkpoint therefore maximises AUC. "
+            "Upstream CLAM monitors val_loss."
         ),
     },
 }
@@ -111,8 +173,25 @@ def assert_run_dir_writable(run_dir: str | os.PathLike[str], overwrite: bool = F
 
     Checks for `summary.csv` and for any `s_*_checkpoint.pt`. Returns the
     directory as a `Path` (created if absent) so callers can chain.
+
+    It also refuses to proceed when Hydra's own output directory is inside
+    `run_dir`. `dpcode/conf/config.yaml` keeps it in scratch, but a command-line
+    `hydra.run.dir=...` can still aim it here, and Hydra writes `.hydra/` and the
+    job log before any task code runs — so by the time this fires the provenance
+    of a completed run may already have been overwritten. Detecting it late is
+    still better than a silent retrain on top of it.
     """
     path = Path(run_dir)
+
+    hydra_dir = hydra_output_dir()
+    if hydra_dir is not None and _is_within(hydra_dir, path):
+        raise FileExistsError(
+            f"Hydra's output directory ({hydra_dir}) is inside the run directory "
+            f"({path}). Hydra creates and writes into it BEFORE this check runs, so "
+            "it must stay in scratch — see hydra.run.dir in dpcode/conf/config.yaml. "
+            "Remove the hydra.run.dir override."
+        )
+
     if not overwrite and path.is_dir():
         existing = []
         if (path / _RESULT_MARKER_FILE).exists():
@@ -130,14 +209,158 @@ def assert_run_dir_writable(run_dir: str | os.PathLike[str], overwrite: bool = F
     return path
 
 
-def write_config_snapshot(cfg: Any, run_dir: str | os.PathLike[str]) -> Path:
-    """Write `config.resolved.yaml` — the fully resolved config. Mandatory."""
+def clam_run_dir(
+    results_dir: str | os.PathLike[str], exp_code: Any, seed: Any
+) -> Path:
+    """The directory CLAM will write into, derived exactly as CLAM derives it.
+
+    `main.py:407` is `os.path.join(args.results_dir, str(args.exp_code) + '_s{}'
+    .format(args.seed))`. This function is that line and nothing else, so the
+    entry point's overwrite guard and metadata land in the directory CLAM will
+    actually use rather than one that merely looks like it.
+    """
+    return Path(results_dir) / f"{exp_code}_s{seed}"
+
+
+def hydra_output_dir() -> Path | None:
+    """Hydra's own output directory for the running job, or `None` outside Hydra.
+
+    `HydraConfig.get().runtime.output_dir` is the documented accessor and is
+    correct under `--multirun` too, where `hydra.run.dir` is ignored and the
+    per-job directory comes from `hydra.sweep.dir`/`subdir`.
+    """
+    try:
+        from hydra.core.hydra_config import HydraConfig
+
+        return Path(str(HydraConfig.get().runtime.output_dir))
+    except Exception:
+        return None
+
+
+def copy_hydra_outputs(
+    source: str | os.PathLike[str] | None,
+    run_dir: str | os.PathLike[str],
+) -> Path | None:
+    """Copy Hydra's `.hydra/` from its scratch output directory into `run_dir`.
+
+    Step 6 of the ordering in the module docstring. `source` is usually
+    :func:`hydra_output_dir`; pass `None` and this is a no-op.
+
+    Returns the destination, or `None` if there was nothing to copy. It does not
+    raise: this runs after the training subprocess has exited, and a bookkeeping
+    failure must not fail a completed run. The caller records the returned value
+    (or its absence) in `run_metadata.json`.
+    """
+    if source is None:
+        return None
+    origin = Path(source) / HYDRA_SUBDIR
+    if not origin.is_dir():
+        return None
+    destination = Path(run_dir) / HYDRA_SUBDIR
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(origin, destination, dirs_exist_ok=True)
+    except OSError:
+        return None
+    return destination
+
+
+def resolved_container(cfg: Any) -> tuple[Any, list[str]]:
+    """Resolve `cfg` into plain containers without ever raising.
+
+    Returns `(container, problems)`. Each key that cannot be resolved — an
+    `oc.env` with no default and an unset variable, a `MISSING` value, a custom
+    resolver that fails — becomes a `<unresolved: ...>` marker in the container
+    and one line in `problems`.
+
+    The bulk path (`OmegaConf.to_container(resolve=True)`) is tried first and is
+    what runs in practice; the per-key walk is the fallback that keeps a snapshot
+    from aborting a finished run.
+    """
     from omegaconf import OmegaConf
+    from omegaconf.errors import OmegaConfBaseException
+
+    try:
+        return OmegaConf.to_container(cfg, resolve=True, throw_on_missing=False), []
+    except OmegaConfBaseException:
+        problems: list[str] = []
+        return _resolve_leniently(cfg, problems, ""), problems
+
+
+def redact(container: Any) -> tuple[Any, list[str]]:
+    """Blank out private and credential-shaped values. Returns `(container, notes)`.
+
+    Two rules: the exact dotted keys in :data:`REDACTED_KEYS`, and any key whose
+    name contains one of :data:`CREDENTIAL_KEY_SUBSTRINGS` at any depth. A value
+    that is already `None` is left alone — an unset optional key reveals nothing
+    and blanking it would imply something is there.
+    """
+    notes: list[str] = []
+
+    def walk(node: Any, prefix: str) -> Any:
+        if isinstance(node, dict):
+            out = {}
+            for key, value in node.items():
+                dotted = f"{prefix}{key}"
+                name = str(key).lower()
+                sensitive = dotted in REDACTED_KEYS or any(
+                    token in name for token in CREDENTIAL_KEY_SUBSTRINGS
+                )
+                if sensitive and value is not None:
+                    notes.append(dotted)
+                    out[key] = REDACTED_PLACEHOLDER
+                else:
+                    out[key] = walk(value, f"{dotted}.")
+            return out
+        if isinstance(node, list):
+            return [walk(item, prefix) for item in node]
+        return node
+
+    return walk(container, ""), notes
+
+
+def write_config_snapshot(cfg: Any, run_dir: str | os.PathLike[str]) -> Path:
+    """Write `config.resolved.yaml` — the resolved, redacted config. Mandatory.
+
+    Mandatory because Hydra's `.hydra/config.yaml` is stored UNRESOLVED: replaying
+    it on another machine, where `DP_REPO_ROOT` differs, reconstructs a different
+    configuration. This file is the one that says which paths were actually read.
+
+    It never raises for a config-content reason — see :func:`resolved_container`
+    and the module docstring — and it is written BEFORE dispatch so that even a
+    resolution problem costs zero GPU time.
+
+    Dumped with `yaml.safe_dump` rather than `OmegaConf.to_yaml`, because the
+    container may legitimately contain literal `${...}` text for a key that could
+    not be resolved, and round-tripping that through `OmegaConf.create` would turn
+    it back into an interpolation.
+    """
+    import yaml
 
     out = Path(run_dir)
     out.mkdir(parents=True, exist_ok=True)
     target = out / CONFIG_SNAPSHOT_NAME
-    target.write_text(OmegaConf.to_yaml(cfg, resolve=True), encoding="utf-8")
+
+    container, problems = resolved_container(cfg)
+    container, redacted = redact(container)
+
+    header = [
+        f"# {CONFIG_SNAPSHOT_NAME} — the composed config, resolved on this machine.",
+        "# Hydra's own .hydra/config.yaml is stored UNRESOLVED; this file is what",
+        "# records the values a run actually used.",
+    ]
+    if redacted:
+        header.append(
+            "# Redacted (private cohort / credential-shaped keys): "
+            + ", ".join(sorted(set(redacted)))
+        )
+    for problem in problems:
+        header.append(f"# UNRESOLVED {problem}")
+
+    body = yaml.safe_dump(
+        container, sort_keys=False, default_flow_style=False, allow_unicode=True
+    )
+    target.write_text("\n".join(header) + "\n" + body, encoding="utf-8")
     return target
 
 
@@ -386,6 +609,56 @@ class RunMetadata:
 # --------------------------------------------------------------------------- #
 # internals
 # --------------------------------------------------------------------------- #
+
+
+def _is_within(candidate: Path, parent: Path) -> bool:
+    """True if `candidate` is `parent` or lives under it, symlinks resolved.
+
+    `is_relative_to` rather than a string prefix, so `/a/bc` is not "inside"
+    `/a/b`.
+    """
+    try:
+        return Path(os.path.realpath(candidate)).is_relative_to(
+            Path(os.path.realpath(parent))
+        )
+    except (OSError, ValueError):  # pragma: no cover - unreadable path components
+        return False
+
+
+def _resolve_leniently(node: Any, problems: list[str], prefix: str) -> Any:
+    """Per-key resolution: one bad interpolation costs one key, not the file."""
+    from omegaconf import DictConfig, ListConfig
+
+    if isinstance(node, DictConfig):
+        out: dict[Any, Any] = {}
+        for key in list(node.keys()):
+            dotted = f"{prefix}{key}"
+            try:
+                value = node[key]
+            except Exception as exc:
+                problems.append(f"{dotted}: {type(exc).__name__}: {_one_line(exc)}")
+                out[key] = f"<unresolved: {type(exc).__name__}>"
+                continue
+            out[key] = _resolve_leniently(value, problems, f"{dotted}.")
+        return out
+    if isinstance(node, ListConfig):
+        items = []
+        for index in range(len(node)):
+            dotted = f"{prefix.rstrip('.')}[{index}]"
+            try:
+                value = node[index]
+            except Exception as exc:
+                problems.append(f"{dotted}: {type(exc).__name__}: {_one_line(exc)}")
+                items.append(f"<unresolved: {type(exc).__name__}>")
+                continue
+            items.append(_resolve_leniently(value, problems, f"{dotted}."))
+        return items
+    return node
+
+
+def _one_line(exc: BaseException) -> str:
+    """OmegaConf errors are multi-line; a YAML comment is not."""
+    return " ".join(str(exc).split())
 
 
 def _to_number(value: Any) -> Any:

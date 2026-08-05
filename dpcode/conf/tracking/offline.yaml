@@ -1,0 +1,13 @@
+# W&B logging to disk only; sync later with `wandb sync`.
+#
+# The right choice on a cluster node with no outbound network. Runs land in
+# `${paths.scratch_root}/wandb/offline-run-<timestamp>-<id>/`, which is
+# gitignored and outside the invocation cwd.
+#
+# Select it with `tracking=offline`.
+enabled: true
+mode: offline
+project: ${oc.env:WANDB_PROJECT,clam-brca-subtyping-cv}
+entity: ${oc.env:WANDB_ENTITY,null}
+tags: []
+dir: ${paths.scratch_root}/wandb

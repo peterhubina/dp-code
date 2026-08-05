@@ -1,0 +1,19 @@
+# W&B logging to the server.
+#
+# The API key is NOT configuration: it is read from `~/.netrc`, which
+# `docker/run.sh` and the devcontainer bind-mount into the container. Nothing in
+# this repository stores or transmits it.
+#
+# `mode` still honours WANDB_MODE, so a CI job can force `disabled` without
+# editing the config; project and entity honour WANDB_PROJECT / WANDB_ENTITY.
+#
+# Select it with `tracking=online`.
+#
+# NEVER point this at a public project when a run touches the private
+# institutional cohort (`paths.nou_root`).
+enabled: true
+mode: ${oc.env:WANDB_MODE,online}
+project: ${oc.env:WANDB_PROJECT,clam-brca-subtyping-cv}
+entity: ${oc.env:WANDB_ENTITY,null}
+tags: []
+dir: ${paths.scratch_root}/wandb

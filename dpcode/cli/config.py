@@ -130,6 +130,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 + "\n  - ".join(drift)
             )
 
+    problems.extend(_inst_loss_dependency_problems(cfg))
+
     not_acquired = [key for key in ACQUIRED_DATA_KEYS if not _exists(cfg, key)]
 
     print(f"config       : {conf_dir() / (CONFIG_NAME + '.yaml')}")
@@ -188,6 +190,28 @@ def _exists(cfg: DictConfig, key: str) -> bool:
     return value is not None and Path(str(value)).exists()
 
 
+def _inst_loss_dependency_problems(cfg: DictConfig) -> list[str]:
+    """`--inst_loss svm` needs `topk`, which is a git pin with no PyPI fallback.
+
+    `project/CLAM/utils/core_utils.py` imports `topk.svm` only once training has
+    started, so a missing `topk` surfaces minutes into a job rather than here.
+    The frozen WSI baseline (`pam50_final_s1`) is an `--inst_loss svm` run, so
+    this is on the path to the headline number, not a corner case.
+    """
+    if str(OmegaConf.select(cfg, "clam.inst_loss")) != "svm":
+        return []
+    try:
+        import topk.svm  # noqa: F401
+    except ImportError as exc:
+        return [
+            "clam.inst_loss=svm needs the `topk` distribution (smooth-topk), which "
+            f"is not importable: {exc}. It is a git pin with no PyPI fallback — "
+            "`pip install -e .` needs git and network for it. Without it CLAM "
+            "fails minutes into training, in utils/core_utils.py."
+        ]
+    return []
+
+
 def _clam_schema_drift() -> list[str]:
     """Compare CLAM's real parser against `ClamConf` and `clam/base.yaml`.
 
@@ -222,7 +246,19 @@ def _clam_schema_drift() -> list[str]:
                 f"`{dest}`: ClamConf default {field.default!r} != main.py default "
                 f"{action.default!r}"
             )
-        if dest in base and base[dest] != action.default:
+        if dest in schema.PATH_INTERPOLATION_FIELDS:
+            # A5: these three are interpolations of `paths` in base.yaml, so the
+            # value comparison does not apply. CLAM's real default is still
+            # pinned — on ClamConf, checked just above. What base.yaml owes is
+            # that it did not quietly become a literal again.
+            value = base.get(dest)
+            if not (isinstance(value, str) and "${paths." in value):
+                problems.append(
+                    f"`{dest}`: clam/base.yaml value {value!r} must interpolate the "
+                    "`paths` group (DESIGN-ADDENDUM A5), otherwise CLAM's output "
+                    "directory can be decoupled from dpcode's metadata directory."
+                )
+        elif dest in base and base[dest] != action.default:
             problems.append(
                 f"`{dest}`: clam/base.yaml value {base[dest]!r} != main.py default "
                 f"{action.default!r}"
@@ -286,7 +322,7 @@ def render_reference() -> str:
         "sources": schema.SourcesConf,
         "clam": schema.ClamConf,
         "fusion": schema.FusionConf,
-        "wandb": schema.WandbConf,
+        "tracking": schema.TrackingConf,
         "run": schema.RunConf,
     }
 
@@ -321,7 +357,12 @@ def _clam_table() -> str:
     out = io.StringIO()
     out.write(
         "Every field is an argument of `project/CLAM/main.py`, extracted from that\n"
-        "file's own parser. Help text is CLAM's.\n\n"
+        "file's own parser. Help text and defaults are CLAM's.\n\n"
+        "Three of them are NOT composed at the default shown here:\n"
+        + ", ".join(f"`clam.{name}`" for name in schema.PATH_INTERPOLATION_FIELDS)
+        + ".\n`clam/base.yaml` sets those to interpolations of the `paths` group, so\n"
+        "CLAM's output directory cannot be decoupled from the directory dpcode writes\n"
+        "run metadata into. Run `dp-config show` to see what they compose to.\n\n"
     )
     out.write("| key | type | default | choices | help |\n|---|---|---|---|---|\n")
     for action in clam_args.clam_actions(parser):

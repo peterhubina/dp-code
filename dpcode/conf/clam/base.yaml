@@ -14,12 +14,52 @@
 #   * `results_dir` is not the run directory. CLAM appends `<exp_code>_s<seed>`
 #     to it (main.py:407) using `os.mkdir`, not `makedirs`, so the parent must
 #     already exist.
-#   * `split_dir` is a NAME, not a path. CLAM prefixes it with the literal
-#     `splits/` (main.py:412,414) and asserts it relative to CWD, which is why
-#     every entry point runs `main.py` with cwd `project/CLAM`.
+#   * `split_dir` is a NAME, not a path, as CLAM's callers spell it. CLAM
+#     prefixes it with the literal `splits/` (main.py:412,414) and asserts it
+#     relative to CWD, which is why every entry point runs `main.py` with cwd
+#     `project/CLAM`. `os.path.join('splits', '/abs/path')` returns `/abs/path`,
+#     so an ABSOLUTE `--split_dir` survives that prefixing unchanged — which is
+#     what lets this file spell the split set against `paths.splits_root`.
+#
+# ---------------------------------------------------------------------------
+# THE ONE PLACE THIS FILE IS NOT VERBATIM (DESIGN-ADDENDUM A5 vs A7)
+#
+# `data_root_dir`, `results_dir` and `split_dir` are interpolations of the
+# `paths` group instead of CLAM's own defaults (`null`, `./results`, `null`).
+# A5 and A7 cannot both hold for these three, so A5 wins and A7 is bent, for
+# these three keys only:
+#
+#   * `results_dir` decides where CLAM writes checkpoints while
+#     `paths.results_root` decides where dpcode writes `config.resolved.yaml`,
+#     `run_metadata.json` and `metrics.json`. As two independent literals, one
+#     override splits a run across two trees silently, and `run_metadata.json`
+#     names the wrong directory. Keeping `./results` here would additionally put
+#     every run under `project/CLAM/results/`, i.e. inside the tracked tree.
+#   * `data_root_dir: null` and `split_dir: null` are not usable values at all —
+#     CLAM cannot run with either — so recording them here buys nothing, while
+#     the interpolations make the two locations overridable from one place.
+#
+# CLAM's true defaults for these three stay recorded on `dpcode.schema.ClamConf`
+# (`data_root_dir=None`, `results_dir='./results'`, `split_dir=None`), which is
+# what `dp-config sync-check` and `tests/test_schema.py` compare field-for-field
+# against the real parser. Those checks exempt these three keys from the
+# base.yaml value comparison (see `dpcode.schema.PATH_INTERPOLATION_FIELDS`) and
+# require instead that each one interpolates `paths`.
+#
+# `split_dir` reproduces CLAM's OWN inference verbatim: with `--split_dir`
+# omitted, main.py:411-412 uses `splits/<task>_<int(label_frac*100)>`, which
+# relative to cwd `project/CLAM` is exactly `${paths.splits_root}/<task>_100` at
+# the label_frac 1.0 every wrapper uses. The `100` is literal here, so a run with
+# `label_frac != 1.0` must set `clam.split_dir` explicitly rather than inherit a
+# split set that no longer matches. Split sets that do not follow the `<task>_100`
+# convention (`tcga_brca_er_lsgo`, `tcga_brca_subtyping_100_case`) likewise
+# override this key.
+# ---------------------------------------------------------------------------
 
 # --- generic training settings (main.py:120-153) ---
-data_root_dir: null
+# A5: interpolation, not CLAM's `null`. TCGA-BRCA UNI2-h features are what every
+# tracked trainer passes; CPTAC inference overrides it to `paths.cptac_embeddings`.
+data_root_dir: ${paths.tcga_embeddings}
 embed_dim: 1024
 max_epochs: 200
 lr: 0.0001
@@ -29,8 +69,13 @@ seed: 1
 k: 10
 k_start: -1
 k_end: -1
-results_dir: './results'
-split_dir: null
+# A5: interpolation, not CLAM's `'./results'`. CLAM appends
+# `<exp_code>_s<seed>` to this, giving the run directory that dpcode's metadata
+# files are written into.
+results_dir: ${paths.results_root}
+# A5: interpolation, not CLAM's `null`. Spells out CLAM's own `<task>_100`
+# inference against the tracked splits tree; see the block at the top.
+split_dir: ${paths.splits_root}/${clam.task}_100
 log_data: false
 testing: false
 early_stopping: false

@@ -15,9 +15,19 @@ The point of extracting rather than re-declaring is that the config schema then
 *cannot* drift from CLAM: add a flag to `main.py` and the drift shows up as a
 failing check, not as a silently unreachable option.
 
-The three public functions:
+Parsing cleanly is not the whole contract. `main.py:214-232`, *after*
+`parse_args()`, runs eight `parser.error(...)` cross-argument checks — the ones
+that decide which of the six fusion operators is actually runnable. A config that
+forgets `tabular_group_spec` under `coattn` parses fine, passes every parity
+check, and then dies at CLAM startup. So that block is extracted too, by the same
+AST route, wrapped into a callable that takes `(args, parser)`; nothing else in
+`main.py` runs, and `validate_clam_args` reports CLAM's own message.
+
+The public functions:
 
 ``clam_parser()``      the genuine parser, with CLAM's own defaults/types/choices
+``validate_clam_args(ns)``  CLAM's cross-argument checks, raising
+                       :class:`ClamArgumentError` with CLAM's own wording
 ``render_argv(cfg)``   config -> the argv list handed to `python main.py`
 ``parse_for_comparison(argv, cwd)``  argv -> a normalised namespace dict, which is
                        what the parity test compares between the legacy shell
@@ -28,23 +38,37 @@ from __future__ import annotations
 
 import argparse
 import ast
+import builtins
 import os
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .paths import repo_root
 
 __all__ = [
     "CLAM_MAIN_RELPATH",
     "PATH_VALUED_DESTS",
+    "ClamArgumentError",
     "clam_main_path",
     "clam_parser",
     "clam_actions",
     "clam_dests",
+    "clam_validator",
+    "validate_clam_args",
     "render_argv",
     "parse_for_comparison",
 ]
+
+
+class ClamArgumentError(ValueError):
+    """A cross-argument check from `main.py:214-232` rejected the configuration.
+
+    The message is CLAM's own, verbatim, so a config error reads the same whether
+    it is caught here before dispatch or by `main.py` after it. `ValueError` so
+    that the CLI's existing error handling prints it as a user error rather than
+    a traceback.
+    """
 
 CLAM_MAIN_RELPATH = "project/CLAM/main.py"
 
@@ -128,6 +152,120 @@ def clam_actions(parser: argparse.ArgumentParser | None = None) -> list[argparse
 def clam_dests(parser: argparse.ArgumentParser | None = None) -> list[str]:
     """The `dest` name of every CLAM argument, in declaration order."""
     return [a.dest for a in clam_actions(parser)]
+
+
+def clam_validator(
+    main_py: str | os.PathLike[str] | None = None,
+) -> Callable[[argparse.Namespace, Any], None]:
+    """Return CLAM's cross-argument validation as a callable ``(args, parser)``.
+
+    Extracted from `main.py:214-232` by the same AST route as the parser: the
+    module-level statements that sit between `parse_args()` and the first
+    function definition AND contain a `parser.error(...)` call are lifted into a
+    synthetic `def`. That selection rule is what excludes `main.py:212`
+    (`device = torch.device(...)`), which lives in the same range and would drag
+    torch — and a CUDA context — into a config check.
+
+    The extraction is strict in three ways, because a validator that silently
+    validates nothing is worse than no validator: it raises if it finds no
+    checks, if it finds fewer `parser.error` calls than the source contains in
+    that range, or if the lifted code reads any name other than `args`, `parser`
+    and builtins.
+    """
+    path = Path(main_py) if main_py is not None else clam_main_path()
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+
+    start = _index_of(tree.body, _is_parse_args_call)
+    if start is None:
+        raise RuntimeError(f"{path}: no `... = parser.parse_args()` statement at module level.")
+    end = _index_of(
+        tree.body,
+        lambda node: isinstance(node, (ast.FunctionDef, ast.ClassDef)),
+        after=start,
+    )
+    if end is None:
+        end = len(tree.body)
+
+    region = tree.body[start + 1 : end]
+    checks = [stmt for stmt in region if _counts_parser_errors(stmt)]
+    if not checks:
+        raise RuntimeError(
+            f"{path}: no `parser.error(...)` cross-argument checks found between "
+            "parse_args() and the first function definition. CLAM's argument "
+            "contract has moved; dpcode.clam_args must be updated to follow it."
+        )
+    found = sum(_counts_parser_errors(stmt) for stmt in checks)
+    expected = sum(_counts_parser_errors(stmt) for stmt in region)
+    if found != expected:  # pragma: no cover - defensive; the two lists agree today
+        raise RuntimeError(f"{path}: {expected - found} parser.error checks were skipped.")
+
+    unexpected = sorted(_free_names(checks) - {"args", "parser"} - set(dir(builtins)))
+    if unexpected:
+        raise RuntimeError(
+            f"{path}: the cross-argument checks now read {unexpected}, which cannot be "
+            "supplied without executing more of main.py. Update dpcode.clam_args."
+        )
+
+    function = ast.FunctionDef(
+        name="_clam_validate",
+        args=ast.arguments(
+            posonlyargs=[],
+            args=[ast.arg(arg="args"), ast.arg(arg="parser")],
+            vararg=None,
+            kwonlyargs=[],
+            kw_defaults=[],
+            kwarg=None,
+            defaults=[],
+        ),
+        body=checks,
+        decorator_list=[],
+        returns=None,
+        type_comment=None,
+    )
+    module = ast.fix_missing_locations(
+        ast.copy_location(ast.Module(body=[function], type_ignores=[]), checks[0])
+    )
+    namespace: dict[str, Any] = {}
+    exec(compile(module, filename=str(path), mode="exec"), namespace)  # noqa: S102
+    return namespace["_clam_validate"]
+
+
+def validate_clam_args(
+    namespace: Any,
+    *,
+    parser: argparse.ArgumentParser | None = None,
+    main_py: str | os.PathLike[str] | None = None,
+) -> argparse.Namespace:
+    """Run CLAM's cross-argument checks; raise :class:`ClamArgumentError` on failure.
+
+    `namespace` may be an `argparse.Namespace`, a `DictConfig`, a dataclass or a
+    plain mapping. Absent keys take the parser's default, exactly as argparse
+    would, so `validate_clam_args({"fusion_mode": "coattn"})` reports the missing
+    `--tabular_group_spec` rather than an AttributeError. Unknown keys raise,
+    for the same schema-drift reason `render_argv` does.
+
+    Call this in the entry point BEFORE dispatch. `main.py` runs the identical
+    block, but only after Hydra and the entry point have created directories and
+    written metadata, and `parser.error` there exits the process with status 2.
+    """
+    parser = parser or clam_parser(main_py)
+    dests = set(clam_dests(parser))
+
+    if isinstance(namespace, argparse.Namespace):
+        values = dict(vars(namespace))
+    else:
+        values = _as_mapping(namespace)
+    unknown = sorted(set(values) - dests)
+    if unknown:
+        raise KeyError(f"Config keys that CLAM's parser does not accept: {unknown}.")
+
+    merged = {action.dest: action.default for action in clam_actions(parser)}
+    merged.update(values)
+    args = argparse.Namespace(**merged)
+
+    clam_validator(main_py)(args, _ErrorReporter())
+    return args
 
 
 def render_argv(clam_cfg: Any, parser: argparse.ArgumentParser | None = None) -> list[str]:
@@ -230,6 +368,41 @@ def _is_parser_construction(node: ast.stmt) -> bool:
     if isinstance(func, ast.Attribute):
         return func.attr == "ArgumentParser"
     return isinstance(func, ast.Name) and func.id == "ArgumentParser"
+
+
+class _ErrorReporter:
+    """Stands in for the `ArgumentParser` inside the extracted validation.
+
+    The real `parser.error` prints usage to stderr and raises `SystemExit(2)`,
+    which is right for `main.py` and useless to a library caller. Only `.error`
+    is reachable from the lifted block, and the message it is given is CLAM's.
+    """
+
+    def error(self, message: str):  # noqa: D102 - mirrors argparse's signature
+        raise ClamArgumentError(message)
+
+
+def _counts_parser_errors(node: ast.stmt) -> int:
+    """How many `parser.error(...)` calls this statement contains, at any depth."""
+    return sum(
+        1
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call)
+        and isinstance(child.func, ast.Attribute)
+        and child.func.attr == "error"
+        and isinstance(child.func.value, ast.Name)
+        and child.func.value.id == "parser"
+    )
+
+
+def _free_names(nodes: list[ast.stmt]) -> set[str]:
+    """Every name READ by `nodes`. Attribute bases count; attributes do not."""
+    names: set[str] = set()
+    for node in nodes:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+                names.add(child.id)
+    return names
 
 
 def _is_parse_args_call(node: ast.stmt) -> bool:

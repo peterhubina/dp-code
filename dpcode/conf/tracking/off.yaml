@@ -1,0 +1,22 @@
+# W&B fully disabled. The default, so a clean clone and the test suite never
+# touch the network or a credential.
+#
+# On wandb 0.15.3, `mode: disabled` makes `wandb.init` return a `RunDisabled`
+# sentinel rather than a `Run`: `log`/`finish`/`config` behave, but `log_artifact`
+# and `watch` silently do nothing and return the sentinel. Do not assert on
+# artifact upload in this mode.
+#
+# Select it with `tracking="off"` (quote it — bare `off` is a YAML 1.1 boolean).
+#
+# The group is named `tracking`, not `wandb`, because `.gitignore:68` is a bare
+# `wandb` pattern that matches a directory of that name at ANY depth. A
+# `dpcode/conf/wandb/` could never be committed, so a fresh clone would fail to
+# compose. Anchoring the pattern to `/wandb` would un-ignore
+# `project/CLAM/wandb/` (349 committed run directories), which is worse, so the
+# group moved instead and `.gitignore` is untouched. See DESIGN-ADDENDUM A2.
+enabled: false
+mode: disabled
+project: clam-brca-subtyping-cv
+entity: null
+tags: []
+dir: ${paths.scratch_root}/wandb
