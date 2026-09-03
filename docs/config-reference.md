@@ -12,7 +12,7 @@ resolved values for the machine you are on.
 | group | options | selected by default |
 |---|---|---|
 | `acquire` | `cnv`, `embeddings`, `headline_artifacts`, `labels` | `-` |
-| `analyses` | `cnv_controls`, `cnv_wsi_fusion`, `compare_fusion_ladder`, `make_cnv_tabular`, `stack_wsi_cnv` | `-` |
+| `analyses` | `cnv_controls`, `cnv_wsi_fusion`, `compare_fusion_ladder`, `cptac_fusion_ladder`, `make_cnv_tabular`, `stack_wsi_cnv` | `-` |
 | `clam` | `base` | `base` |
 | `cptac` | `default` | `-` |
 | `evaluate` | `pam50_multimodal` | `-` |
