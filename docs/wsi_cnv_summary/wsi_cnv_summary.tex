@@ -1,0 +1,344 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage[margin=2.1cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\PassOptionsToPackage{hyphens}{url}
+\usepackage{url}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{float}
+\hypersetup{colorlinks=true, linkcolor=blue!50!black, citecolor=blue!50!black,
+            urlcolor=blue!50!black, hypertexnames=false}
+\setlength{\parskip}{0.42em}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.10}
+\setlength{\emergencystretch}{3em}
+\newcommand{\best}[1]{\textbf{#1}}
+
+\title{\vspace{-1.2em}H\&E + arm-level CNV fusion for PAM50 subtype:\\
+internal and external evaluation summary}
+\author{dp-code project (compiled from on-disk results)}
+\date{2026-09-01}
+
+\begin{document}
+\maketitle
+\vspace{-1.2em}
+
+\begin{abstract}
+\noindent
+Does conditioning H\&E whole-slide images on arm-level copy number beat averaging two independent
+predictions for four-class PAM50 subtyping? No. Trained on TCGA-BRCA and validated on CPTAC-BRCA
+(114 cases, 378 slides, never trained on), the untrained equal-weight probability mean of a
+CLAM-MB / UNI2-h WSI model and a 39-arm copy-number logistic regression reaches macro AUROC
+0.909 [0.861, 0.949] externally, against 0.847 for WSI alone and 0.888 for CNV alone; a post hoc
+prior-balanced mean reaches 0.912. Internally, on 599 pooled out-of-fold TCGA cases with the CNV
+arm refit per CLAM fold, the mean reaches 0.926 against WSI 0.887 and CNV 0.872, and all five
+jointly trained fusion operators score 0.882 to 0.899, every one significantly below that
+untrained mean. CNV alone is reported with every fusion number: externally the equal-weight mean
+is not distinguishable from it.
+\end{abstract}
+
+\section{Setup}
+
+\textbf{Task and unit.} Four-class PAM50 subtype (Luminal A, Luminal B, Basal-like,
+HER2-enriched); Normal-like is dropped and CPTAC contains no Normal-like case, so the cohorts
+share a label space. The prediction unit is the case: slide-level probabilities are mean-pooled to
+the case before any metric is computed. Macro AUROC is one-vs-rest.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\caption{Case sets. Each TCGA row is a subset of the one above it.
+Source: \texttt{data/cohort\_counts.csv}.}
+\label{tab:cohort}
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+Case set & LumA & LumB & Basal & Her2 & Normal & Total \\
+\midrule
+TCGA labelled cases (incl.\ Normal-like) & 499 & 197 & 171 & 78 & 36 & 981 \\
+TCGA non-Normal with arm CNV (the CNV fitting set) & 499 & 197 & 171 & 78 & 0 & \best{945} \\
+TCGA CLAM tabular table (CNV + WSI + fold) & 475 & 195 & 165 & 75 & 0 & \best{910} \\
+TCGA with CLAM out-of-fold predictions (all internal contrasts) & 318 & 124 & 106 & 51 & 0 & \best{599} \\
+\midrule
+CPTAC-BRCA external cases (378 slides) & 56 & 17 & 27 & 14 & 0 & \best{114} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Arms.} The WSI arm is UNI2-h 1536-dimensional patch features aggregated by CLAM-MB
+(\texttt{model\_size big}, dropout 0.5, inverse-frequency weighted sampler, so no claim of
+``natural class frequencies'' applies), 10 folds at seed 1 on the tracked split set
+\texttt{splits/tcga\_brca\_subtyping\_100}. The CNV arm is 39 chromosome arms, each feature the
+median gene-level $\log_2$ ratio over that arm, which is the scale deployed low-pass assays
+report; its classifier is a frozen constant defined once in \texttt{tools/pam50\_arms.py},
+\texttt{StandardScaler} $\rightarrow$
+\texttt{LogisticRegression(max\_iter=4000, C=0.1, class\_weight='balanced')}, refit in process and
+never stored as a checkpoint. Copy number rather than RNA is the second modality because the PAM50
+labels are computed from the expression matrix itself, so an RNA branch leaks the target by
+construction; the project's WSI+RNA number is inflated for that reason and is not quoted here.
+
+\textbf{Fusion.} The untrained \emph{equal-weight probability mean} averages the two four-class
+probability vectors element-wise; it has no parameters, was fixed on TCGA before CPTAC was scored,
+and is the baseline every trained operator must clear. Five trained operators (\texttt{concat},
+\texttt{gated}, \texttt{cross\_attention}, \texttt{film\_attention}, \texttt{coattn}) pair the
+CLAM-MB branch with a two-layer tabular encoder over the 39 arms
+(\texttt{tabular\_hidden\_dim 64}, \texttt{fusion\_hidden\_dim 32}), all warm-started from the
+corresponding fold's WSI-only checkpoint and not frozen; \texttt{film\_attention} conditions the
+attention network's input through a rank-16 FiLM bottleneck with 0.2 modality dropout, and
+\texttt{coattn} runs co-attention between patch tokens and 22 chromosome tokens. A sixth operator,
+\texttt{residual}, refuses at composition time because no supported trainer produces its tabular
+checkpoint, so the ladder is five operators, not six.
+
+\textbf{Protocols and frozen constants.} Internal metrics are pooled out-of-fold: held-out
+predictions concatenated over the ten folds and scored once, a different quantity from the mean of
+ten per-fold AUCs in CLAM's \texttt{summary.csv} (0.893 there against 0.887 pooled; never mix
+them). Internal contrasts use a paired bootstrap of $N=2000$ at seed 13 with the CNV arm refit per
+CLAM fold; external contrasts use $N=4000$ at seed 7; a third bootstrap, $N=2000$ at seed 11,
+belongs to the stacking analysis and is not quoted here. The three seeds differ deliberately and
+unifying them would move published intervals. Resamples that lose a class are rejected so macro
+AUROC stays defined. Two class orders exist, CLAM's \texttt{LumA, LumB, Basal, Her2} and
+\texttt{pam50\_arms.CLASSES} sorted \texttt{Basal, Her2, LumA, LumB}; they are bridged by
+\texttt{clam\_column\_order()} before anything is scored across them, and every table here is in
+the sorted order.
+
+\section{Results}
+
+\input{results_table.tex}
+
+\textbf{Internal (TCGA-BRCA, 599 pooled out-of-fold cases).} The untrained equal-weight mean
+reaches macro AUROC 0.926 [0.910, 0.941] and balanced accuracy 0.751, above WSI alone (0.887) and
+CNV alone (0.872, refit per CLAM fold). All five trained operators land between 0.882
+(\texttt{film\_attention}) and 0.899 (\texttt{coattn}), and each is significantly below the mean
+on a paired bootstrap, by $-$0.027 to $-$0.044 macro AUROC; no trained operator reaches even the
+better unimodal arm plus the gap that averaging buys. HER2 recall moves with AUROC: 26/51 for WSI,
+25/51 for CNV, 30/51 for the mean. The mechanism is error correlation, quantified in
+Section~\ref{sec:contrasts}.
+
+\textbf{External (CPTAC-BRCA, 114 cases, never trained on).} The ordering is preserved and the
+HER2 story changes completely. WSI alone reaches 0.847 with HER2 recall 0/14, not one of the
+fourteen HER2-enriched cases recovered. CNV alone reaches 0.888 with 12/14, and the equal-weight
+mean 0.909 with 6/14, the mean inheriting the WSI arm's confident errors on that class. The post
+hoc prior-balanced mean reaches 0.912 with 10/14 and the best balanced accuracy (0.740), but it is
+post hoc and its AUROC gain over the equal-weight mean is not significant. CNV alone remains the
+arm to beat: the equal-weight mean does not separate from it, and only the post hoc
+prior-balanced mean does, with a lower bound that prints as $+0.000$. No trained operator appears
+in the external block because none can be evaluated externally.
+
+\begin{table}[H]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\caption{External per-class AUROC and recall on CPTAC-BRCA, $n=114$, support Basal 27 / HER2 14 /
+LumA 56 / LumB 17. Protocol as in Table~\ref{tab:main} ($N=4000$, seed 7); $\dagger$ marks post
+hoc arms (computed on CPTAC after inspection, no CPTAC tuning of any model).
+Source: \texttt{data/external\_per\_class.csv}.}
+\label{tab:perclass}
+\begin{tabular}{@{}lrrrrcccc@{}}
+\toprule
+& \multicolumn{4}{c}{AUROC (one-vs-rest)} & \multicolumn{4}{c}{Recall (k/n)} \\
+\cmidrule(lr){2-5}\cmidrule(lr){6-9}
+Arm & Basal & HER2 & LumA & LumB & Basal & HER2 & LumA & LumB \\
+\midrule
+WSI only (raw) & 0.972 & 0.860 & 0.861 & 0.693 & 24/27 & 0/14 & 52/56 & 4/17 \\
+CNV only (39 arms) & 0.972 & 0.871 & 0.883 & 0.827 & 22/27 & 12/14 & 37/56 & 9/17 \\
+\textbf{Equal-weight mean} (baseline) & \textbf{0.992} & \textbf{0.881} & \textbf{0.916} & \textbf{0.848} & \textbf{23/27} & \textbf{6/14} & \textbf{50/56} & \textbf{7/17} \\
+WSI only, prior-balanced$^{\dagger}$ & 0.967 & 0.869 & 0.863 & 0.760 & 26/27 & 0/14 & 34/56 & 11/17 \\
+Prior-balanced mean$^{\dagger}$ & 0.990 & 0.893 & 0.918 & 0.848 & 24/27 & 10/14 & 43/56 & 10/17 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Basal-like is near-saturated for every arm (0.967 to 0.992) and is the class most exposed to the
+aneuploidy-burden control: one genome-instability feature already reaches 0.685 macro AUROC on the
+945-case fitting set (5-fold at seed 0, the published protocol), so Basal $\approx 0.97$ must be
+read beside that number rather than as evidence that the arm pattern does all the work. LumB is
+the weakest class everywhere and, at $n=17$, the least certain.
+
+\section{Key contrasts}
+\label{sec:contrasts}
+
+Deltas are paired bootstraps on the same case set; \emph{sig} means the 95\% interval excludes
+zero. Internal: $N=2000$, seed 13, CNV refit per CLAM fold. External: $N=4000$, seed 7.
+Source: \texttt{data/contrasts.csv}.
+
+\begin{itemize}
+\setlength{\itemsep}{1pt}
+\item \textbf{Internal, mean vs.\ WSI alone:} AUROC $+0.039$ [$+0.023$, $+0.054$] sig; balanced
+accuracy $+0.074$ [$+0.027$, $+0.121$] sig.
+\item \textbf{Internal, mean vs.\ CNV alone:} AUROC $+0.054$ [$+0.037$, $+0.073$] sig; balanced
+accuracy $+0.073$ [$+0.033$, $+0.116$] sig.
+\item \textbf{Internal, each trained operator vs.\ the mean:} negative and sig throughout, from
+$-0.027$ [$-0.043$, $-0.011$] (\texttt{coattn}, best) to $-0.044$ [$-0.062$, $-0.027$]
+(\texttt{film\_attention}, worst); balanced accuracy sig-negative for all five.
+\item \textbf{External, equal-weight mean vs.\ WSI alone:} $+0.063$ [$+0.024$, $+0.104$] sig.
+\item \textbf{External, equal-weight mean vs.\ CNV alone:} $+0.021$ [$-0.003$, $+0.047$],
+\emph{ns}. Averaging does not measurably improve on copy number alone externally.
+\item \textbf{External, post hoc prior-balanced mean vs.\ CNV alone:} $+0.024$ [$+0.000$,
+$+0.050$] sig, the lower bound exactly $+0.000$ at three decimals (full precision $+0.00047$).
+This is the whole edge of fusion over CNV alone, and it is post hoc.
+\item \textbf{External, post hoc prior-balanced mean vs.\ equal-weight mean:} AUROC $+0.003$
+[$-0.005$, $+0.011$] \emph{ns}; balanced accuracy $+0.093$ [$+0.014$, $+0.177$] sig.
+\item \textbf{External, CNV alone vs.\ WSI alone:} AUROC $+0.042$ [$-0.019$, $+0.103$]
+\emph{ns}; balanced accuracy $+0.202$ [$+0.089$, $+0.315$] sig.
+\item \textbf{Error correlation $\phi$ between per-case errors.} Among the five trained operators,
+mean over the ten operator pairs, internal pooled out-of-fold: $\phi = 0.656$ (0.582 to 0.706).
+Between the two unimodal arms, internal, CNV refit per CLAM fold: $\phi = 0.193$; the same pair
+under \texttt{StratifiedKFold(10, seed 0)}, which is the published value: $\phi = 0.269$.
+Externally, raw WSI vs.\ CNV: $\phi = -0.006$, either arm right on 91.2\% of cases while each
+alone is right on 70.2\%. Joint training collapses the diversity that averaging exploits.
+\end{itemize}
+
+For context, and as the only comparable published work pairing copy number as the sole molecular
+modality with H\&E for PAM50, Amer 2025 reports CNV+Image 0.8835 against CNV alone 0.8284, and its
+own untrained ``Simple Ensemble'' at 0.9074 beats its trained operators. The pattern here is the
+same one, extended to an external cohort and reported alongside the CNV-alone arm.
+
+\section{Provenance}
+
+Every number above comes from the artifacts in Table~\ref{tab:prov} and from the files copied into
+\texttt{data/} beside this document. The 2026-09-01 recompute reproduced the 2026-08-06 runs with
+zero discrepancies above 0.001 over 108 paired checks. The \texttt{dp-*} console scripts are not on
+\texttt{PATH} in this container, so each 2026-09-01 command was invoked as
+\texttt{/opt/venv/bin/python -m dpcode.cli.analysis <action> [overrides]}, the same \texttt{main()}
+the console script calls, and each run's \texttt{run\_metadata.json} records the canonical
+\texttt{dp-analysis} form. \texttt{dp-analysis} exposes \texttt{-{}-show-config}, not
+\texttt{-{}-dry-run}; the dry-run step used \texttt{-{}-show-config}.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\renewcommand{\arraystretch}{1.2}
+\caption{Artifacts behind this summary, the command that produced each, and its date on disk.
+Paths are absolute; everything under \texttt{.scratch/} and \texttt{.datasets/} is gitignored and
+not recoverable from git.}
+\label{tab:prov}
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{6.2cm}>{\raggedright\arraybackslash}p{7.0cm}>{\raggedright\arraybackslash}p{1.65cm}@{}}
+\toprule
+Artifact & Producing command & Date \\
+\midrule
+\path{/workspace/dp-code/.scratch/results/pam50_final_s1/} \newline
+WSI baseline; \texttt{split\_*\_results.pkl} is the internal WSI arm,
+\texttt{s\_*\_checkpoint.pt} the ladder's warm start &
+\texttt{dp-train experiment=pam50\_wsi\_final} & 2026-03-27 \\
+\path{/workspace/dp-code/.scratch/results/pam50_wsi_cnv_concat_s1/} and the sibling
+\path{_gated_s1}, \path{_cross_attention_s1}, \path{_film_attention_s1}, \path{_coattn_s1} dirs &
+\texttt{dp-train -m experiment=pam50\_wsi\_cnv fusion=} \newline
+\texttt{concat,gated,cross\_attention,film\_attention,} \texttt{coattn} & 2026-08-05 \\
+\path{/workspace/dp-code/.datasets/cnv/tcga_brca_cna_arm.csv},
+\path{.../cptac_brca_cna_arm.csv}, \path{.../reference/gene_arm_hg38.csv}
+(the only pin on the 39-arm feature space) &
+\texttt{dp-data cnv} & 2026-08-03 \\
+\path{/workspace/dp-code/.scratch/cnv-tabular/TCGA_BRCA_CNV_arm_4class_clam.csv} (910 rows),
+\path{.../CPTAC_BRCA_CNV_arm_4class_clam.csv} (114), \path{.../chromosome_groups.csv} &
+\texttt{dp-analysis make\_cnv\_tabular} & 2026-08-05 \\
+\path{/workspace/dp-code/.scratch/cptac_validation/results/predictions/ensemble_predictions.csv}
+(378 slides, 114 cases; the external WSI arm) &
+\texttt{dp-cptac phase=3} (\texttt{tools/cptac/infer\_cptac\_pam50.py}) & 2026-07-29 \\
+\midrule
+\path{/workspace/dp-code/.scratch/analysis/cnv_wsi_fusion/2026-09-01_18-58-28/} and
+\path{.../cnv_wsi_fusion/2026-09-01_18-59-16/} &
+\texttt{dp-analysis cnv\_wsi\_fusion} (external), then the same with
+\texttt{analysis.internal=true} & 2026-09-01 \\
+\path{/workspace/dp-code/.scratch/analysis/stack_wsi_cnv/2026-09-01_19-00-36/} &
+\texttt{dp-analysis stack\_wsi\_cnv} & 2026-09-01 \\
+\path{/workspace/dp-code/.scratch/analysis/compare_fusion_ladder/2026-09-01_19-01-21/} &
+\texttt{dp-analysis compare\_fusion\_ladder} & 2026-09-01 \\
+\path{/workspace/dp-code/.scratch/analysis/cnv_controls/2026-09-01_19-02-20/} and
+\path{.../cnv_controls/2026-09-01_19-04-48/} &
+\texttt{dp-analysis cnv\_controls}, then the same with
+\texttt{analysis.burden\_definition=frac\_altered} & 2026-09-01 \\
+\midrule
+\path{/workspace/dp-code/.scratch/analysis/cnv_wsi_fusion/2026-08-06_10-38-00/},
+\path{.../stack_wsi_cnv/2026-08-06_10-39-11/},
+\path{.../cnv_controls/2026-08-06_10-39-57/},
+\path{.../compare_fusion_ladder/2026-08-06_10-40-00/} (the runs the 2026-09-01 set reproduces) &
+\texttt{dp-analysis cnv\_wsi\_fusion analysis.internal=true};
+\texttt{dp-analysis stack\_wsi\_cnv}; \texttt{dp-analysis cnv\_controls};
+\texttt{dp-analysis compare\_fusion\_ladder} & 2026-08-06 \\
+\midrule
+\path{/workspace/dp-code/tools/pam50_arms.py} (frozen CNV arm, every path constant, the bootstrap,
+the class-order bridge) & imported by every analysis script, the report build and the notebook &
+standing \\
+\path{/workspace/dp-code/.scratch/wsi_cnv_report/} (CSVs, figures, the long report; the
+balanced-accuracy CIs and the full-precision per-class AUROC come from here) &
+\path{.../build_csvs.py}, then \texttt{pdflatex} on \path{wsi_cnv_evaluation.tex}; published copy
+\path{/workspace/dp-code/docs/wsi_cnv_evaluation.pdf} & CSVs 2026-08-06, PDF 2026-08-07 \\
+\path{/workspace/dp-code/tools/evaluate_pam50_fusion.ipynb} (supervisor report, recomputes every
+published number from disk; untracked) & run interactively; PDF at
+\path{/workspace/dp-code/evaluate_pam50_fusion.pdf} & 2026-08-08 \\
+\path{/workspace/dp-code/docs/wsi_cnv_summary/data/} (\path{results_consolidated.csv},
+\path{contrasts.csv}, \path{external_per_class.csv}, \path{eval_notes.md},
+\path{cohort_counts.csv}) & copied unchanged from the 2026-09-01 evaluation and from
+\path{.../wsi_cnv_report/} & 2026-09-01 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Caveats and limitations}
+
+\begin{itemize}
+\setlength{\itemsep}{2pt}
+
+\item \textbf{The external HER2 collapse is domain shift, not calibration.} 0/14 survives a
+12-fold prior boost and SLD-EM label shift (that arm, post hoc, gives 0.858 with recall still 0/14
+and an implied HER2 prior of 0.000). The mechanism is UNI2-h feature-space geometry: cohort of
+origin is readable from a single patch feature at AUROC 1.0000, the cohort shift is 5.4 times the
+HER2 class signal, and a logistic probe on slide-mean features reproduces 0/378, which exonerates
+the MIL head. Aggregation, segmentation dilution, label mismatch and a 17q-specific explanation
+were refuted; CNV's 12/14 holds without 17q.
+
+\item \textbf{Power.} External HER2 is $n=14$ and LumB $n=17$; per-class external numbers for
+those classes, and any recall expressed as k/14, are indicative only.
+
+\item \textbf{The ladder is a near-baseline, not a matched, comparison.} The WSI baseline uses
+sweep-selected optimiser values with \texttt{inst\_loss svm} and instance clustering on; the five
+operators use rounded learning rate and weight decay, CLAM's default bag weight 0.7 and
+\texttt{-{}-no\_inst\_cluster}. Reproduced as run rather than tidied.
+
+\item \textbf{Shared warm start, unseparated confound.} All five operators warm-start from the
+same \texttt{pam50\_final\_s1} checkpoints, so joint-training collapse and shared-initialisation
+diversity collapse cannot be told apart from these runs; a \texttt{-{}-no\_warm\_start} arm would
+settle it and has not been run.
+
+\item \textbf{CPTAC and TCGA features are geometrically comparable but not identically
+preprocessed} (CLAM tissue segmentation for TCGA, Trident for CPTAC).
+
+\item \textbf{The external cohort is stage IIA to IIIC with no Normal-like case.} External CNV
+0.888 against internal 0.866 therefore means ``does not degrade'', not ``improves'': different
+case mixes under different protocols.
+
+\item \textbf{Two internal CNV protocols differ by about 0.010, so name the one in use.} 0.872 is
+the refit per CLAM fold (599 cases) used for every contrast here; 0.862 is
+\texttt{StratifiedKFold(10, seed 0)} on the same cases, whose equal-weight mean is 0.922 rather
+than 0.926; $0.866 \pm 0.003$ is the 5-fold by 10-reseed figure on the full 945-case fitting set
+and is the right one for the CNV branch as a model in its own right. The spread exceeds several
+contrasts called significant, which is why $\phi = 0.193$ (per-CLAM-fold) and $\phi = 0.269$
+(StratifiedKFold) are always quoted with their protocol.
+
+\item \textbf{Independent splits, no external operator evaluation.} CLAM's ten splits are drawn
+independently rather than partitioned, so pooled WSI-only is a small ensemble flattered by roughly
+$+0.01$ AUROC (footnote d of Table~\ref{tab:main}); and no trained operator can be evaluated
+externally (footnote c), so every external fusion row is the untrained probability mean.
+
+\item \textbf{Reproduction environment and determinism.} The console scripts are not installed on
+\texttt{PATH} here, so the 2026-09-01 runs used
+\texttt{python -m dpcode.cli.analysis <action>}; \texttt{pip install -e '.[dev]'} restores them, and
+\texttt{dp-analysis} has \texttt{-{}-show-config} rather than \texttt{-{}-dry-run}. Nothing was
+trained, downloaded or overwritten for this summary. Seeds, folds and split sets are fixed, but
+run-to-run variance is unmeasured and bitwise reproducibility is not achievable in this stack.
+
+\end{itemize}
+
+\vspace{0.4em}
+\noindent\rule{\linewidth}{0.4pt}\\
+{\footnotesize The long-form report, with figures, per-fold tables, the stacking analysis and the
+calibration controls, is \path{/workspace/dp-code/docs/wsi_cnv_evaluation.pdf}. The project
+write-up of the external validation is
+\path{/workspace/dp-code/docs/cnv-wsi-fusion-external-validation.md} (author-owned).}
+
+\end{document}

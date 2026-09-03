@@ -1,0 +1,6 @@
+cohort,LumA,LumB,Basal,Her2,Normal,total
+TCGA labelled cases (incl. Normal-like),499,197,171,78,36,981
+TCGA non-Normal with arm CNV (CNV fitting set),499,197,171,78,0,945
+TCGA CLAM tabular table (CNV + WSI + fold),475,195,165,75,0,910
+TCGA with CLAM out-of-fold predictions,318,124,106,51,0,599
+CPTAC external cases,56,17,27,14,0,114
