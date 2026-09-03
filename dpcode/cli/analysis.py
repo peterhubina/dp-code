@@ -7,6 +7,7 @@
     dp-analysis cnv_controls                         # the controls the document reports
     dp-analysis make_cnv_tabular analysis.cohort=tcga
     dp-analysis compare_fusion_ladder                # subprocess; that script is user-owned
+    dp-analysis cptac_fusion_ladder                  # the same ladder, externally on CPTAC
 
 Every action is CPU-only, reads at most ~1 MB of CSVs plus the CLAM prediction pickles, and
 touches no slide.
@@ -68,6 +69,7 @@ ACTIONS = (
     "cnv_controls",
     "make_cnv_tabular",
     "compare_fusion_ladder",
+    "cptac_fusion_ladder",
 )
 
 #: `paths.*` keys that `tools/pam50_arms.py` resolves for itself. Overriding one of these on the
@@ -230,6 +232,37 @@ def _needs(cfg: DictConfig, action: str) -> list[Need]:
                  "dp-train experiment=pam50_wsi_final   (10 folds on one GPU)"),
             splits, tcga_cnv, tcga_labels,
         ]
+    if action == "cptac_fusion_ladder":
+        # The external counterpart of the ladder. The WSI arm and the five operator prediction
+        # CSVs are all slide-level tables written by the CPTAC inference path; the CNV arm is fit
+        # here on TCGA, so `load_tcga_arms()`'s two inputs are needed as well. The CPTAC arm
+        # matrix is what the CNV arm is *applied* to.
+        #
+        # The CPTAC tabular table is listed even though this action never opens it: it is the
+        # `--tabular_csv` the five operator runs consumed, so without it those predictions cannot
+        # be reproduced or extended, and naming it here is what points at
+        # `dp-analysis make_cnv_tabular` instead of at a bare missing directory.
+        root = (Path(str(cfg.analysis.predictions_root))
+                if cfg.analysis.predictions_root is not None
+                else arms.CPTAC_WSI_PROBS.parent.parent)
+        needed = [
+            Need(root / "predictions" / "ensemble_predictions.csv", None,
+                 "the external WSI arm (378 CPTAC slides -> 114 cases)",
+                 "dp-cptac phase=3"),
+            Need(arms.CNV_TABULAR_DIR / "CPTAC_BRCA_CNV_arm_4class_clam.csv", None,
+                 "the CPTAC tabular CNV table the operator inference was run against",
+                 "dp-analysis make_cnv_tabular analysis.cohort=cptac"),
+            cptac_cnv, tcga_cnv, tcga_labels,
+        ]
+        for op in [str(o) for o in cfg.analysis.operators]:
+            needed.append(Need(
+                root / f"predictions_cnv_fusion_{op}" / "ensemble_predictions.csv", None,
+                f"CPTAC slide-level probabilities for the trained `{op}` operator",
+                f"python tools/cptac/infer_cptac_multimodal.py --ckpt_dir "
+                f".scratch/results/pam50_wsi_cnv_{op}_s1 --fusion_mode {op} --tabular_csv "
+                f".scratch/cnv-tabular/CPTAC_BRCA_CNV_arm_4class_clam.csv --output_dir "
+                f"{root / ('predictions_cnv_fusion_' + op)}"))
+        return needed
     return []
 
 
@@ -306,6 +339,37 @@ def run_compare_fusion_ladder(cfg: DictConfig, run_dir: Path | None = None) -> i
     # Streamed line by line through this process's `print` rather than inherited on fd 1: the run
     # directory's `output.txt` is written by a Python-level tee, and a child writing straight to
     # the file descriptor would leave the recorded output empty while the terminal looked fine.
+    child = subprocess.Popen(argv, cwd=str(cfg.paths.repo_root), stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, bufsize=1)
+    assert child.stdout is not None
+    for line in child.stdout:
+        print(line, end="")
+    return child.wait()
+
+
+def run_cptac_fusion_ladder(cfg: DictConfig, run_dir: Path | None = None) -> int:
+    """Dispatch `tools/score_cptac_fusion_ladder.py` as a subprocess.
+
+    A subprocess rather than an import for the same reason `compare_fusion_ladder` is one: the
+    script is a standalone table producer with its own argparse contract, and dispatching it keeps
+    `python tools/score_cptac_fusion_ladder.py` and this entry point provably the same run. Its
+    output directory is the analysis run directory, so `cptac_fusion_ladder.csv`, `phi_matrix.csv`
+    and `cptac_fusion_ladder.json` land beside `output.txt` and `config.resolved.yaml`.
+    """
+    script = Path(str(cfg.paths.repo_root)) / "tools" / "score_cptac_fusion_ladder.py"
+    if not script.exists():
+        raise FileNotFoundError(f"{script} does not exist")
+    a = cfg.analysis
+    argv = [sys.executable, str(script),
+            "--n-boot", str(a.n_boot), "--bootstrap-seed", str(a.bootstrap_seed),
+            "--operators", *[str(op) for op in a.operators]]
+    if a.predictions_root is not None:
+        argv += ["--predictions-root", str(a.predictions_root)]
+    if run_dir is not None:
+        argv += ["--out-dir", str(run_dir)]
+    print(f"$ {' '.join(argv)}\n", flush=True)
+    # Streamed line by line through this process's `print` rather than inherited on fd 1, so the
+    # run directory's tee'd `output.txt` captures the table. See run_compare_fusion_ladder.
     child = subprocess.Popen(argv, cwd=str(cfg.paths.repo_root), stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, text=True, bufsize=1)
     assert child.stdout is not None
@@ -692,6 +756,7 @@ DISPATCH: dict[str, Callable[..., int]] = {
     "cnv_controls": run_cnv_controls,
     "make_cnv_tabular": run_make_cnv_tabular,
     "compare_fusion_ladder": run_compare_fusion_ladder,
+    "cptac_fusion_ladder": run_cptac_fusion_ladder,
 }
 
 

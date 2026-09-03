@@ -1,0 +1,48 @@
+# @package analysis
+#
+# Score the five trained fusion operators on CPTAC against WSI alone, CNV alone and their mean.
+#
+# NOTE the directory name. This group's OPTIONS live in `dpcode/conf/analyses/` while the config
+# key they populate is `analysis`, because `.gitignore:74` is a bare `analysis` pattern, which
+# matches a directory of that name at any depth — `dpcode/conf/analysis/` could never have been
+# committed and a fresh clone would have failed to compose. Same trap as the `wandb` group in
+# DESIGN-ADDENDUM A2, same remedy: `.gitignore` is left untouched and the directory is renamed.
+# The `# @package analysis` line MUST stay on line 1 — Hydra only reads the directive from the
+# very first line — and it is what keeps the config key unchanged, so every override is still
+# spelled `analysis.<key>=…`.
+#
+# Dispatches tools/score_cptac_fusion_ladder.py as a SUBPROCESS, mirroring compare_fusion_ladder:
+# the script reads CPTAC prediction CSVs already on disk, fits the CNV arm on TCGA and prints one
+# table. Nothing is refit, tuned or thresholded on CPTAC.
+#
+# This is the external counterpart of `compare_fusion_ladder`, which is internal (599 pooled TCGA
+# cases, 2000 resamples at seed 13). The constants here are the EXTERNAL ones — 4000 resamples at
+# seed 7, tools/evaluate_cnv_wsi_fusion.py's — because this table has to sit beside the published
+# external table, not beside the internal ladder. The two seeds differ on purpose; unifying them
+# would change published confidence intervals (DESIGN-ADDENDUM A6).
+#
+# The operator prediction directories are produced by
+# `tools/cptac/infer_cptac_multimodal.py --ckpt_dir .scratch/results/pam50_wsi_cnv_<op>_s1`; the
+# precondition check names that command for each missing one before any run directory is created.
+
+action: cptac_fusion_ladder
+
+# null means the resolved .scratch/cptac_validation/results, i.e. the directory holding
+# `predictions/` (the WSI arm, from `dp-cptac phase=3`) and the five
+# `predictions_cnv_fusion_<op>/` directories. Point it elsewhere to score an alternative
+# inference run without touching the published one.
+predictions_root: null
+
+# The five trained ladder arms, in the order the ladder was run and is reported. Narrow it to
+# score a subset, e.g. analysis.operators=[gated,coattn].
+operators: [concat, gated, cross_attention, film_attention, coattn]
+
+# Paired-bootstrap resamples and their RNG seed: the frozen external constants. Every 95% CI in
+# the printed table, and every sig/ns verdict, is a function of both.
+n_boot: 4000
+bootstrap_seed: 7
+
+# Recorded, not settable: tools/pam50_arms.CLASSES. The prediction CSVs are written in CLAM's
+# label_dict order (p_LumA, p_LumB, p_Basal, p_Her2) and the script selects its probability
+# columns BY NAME into this order; dp-analysis aborts if the module disagrees.
+class_order: [Basal, Her2, LumA, LumB]
