@@ -2,6 +2,8 @@
 """Compare the fusion-operator ladder against the WSI-only model and the probability mean.
 
     python tools/compare_fusion_ladder.py
+    python tools/compare_fusion_ladder.py --run-pattern 'pam50_wsi_cnv_matched_{mode}_s1' \
+                                          --compare-to 'pam50_wsi_cnv_{mode}_s1'
 
 CLAM's ``summary.csv`` reports each fold's AUC and averages them. That is not the quantity the
 rest of this thread is measured in, and the two are not interchangeable: everything in
@@ -57,20 +59,45 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--n-boot", type=int, default=2000)
+    ap.add_argument("--run-pattern", default="pam50_wsi_cnv_{mode}_s1",
+                    help="run-dir name under .scratch/results per operator; {mode} substituted")
+    ap.add_argument("--compare-to", default=None,
+                    help="a second run-dir pattern; each operator present is also "
+                         "paired-bootstrapped against its counterpart there")
     args = ap.parse_args()
 
     runs = {"WSI only": load_run(RESULTS / WSI_ONLY)}
     for mode in LADDER:
-        run_dir = RESULTS / f"pam50_wsi_cnv_{mode}_s1"
-        if run_dir.is_dir():
-            runs[mode] = load_run(run_dir)
-        else:
+        run_dir = RESULTS / args.run_pattern.format(mode=mode)
+        if not run_dir.is_dir():
             print(f"  (skipping {mode}: {run_dir.relative_to(REPO)} not found)")
+        elif not any(run_dir.glob("split_*_results.pkl")):
+            # A run that is still under way: CLAM creates the directory with the first fold, the
+            # per-fold pickles land later. Skipping is what "not trained yet" has always meant.
+            print(f"  (skipping {mode}: {run_dir.relative_to(REPO)} has no split_*_results.pkl)")
+        else:
+            runs[mode] = load_run(run_dir)
+
+    # The reference ladder, when one is asked for: the same operators trained under a different
+    # recipe. Kept out of `runs` so it never joins the ensemble, phi or FiLM blocks -- it exists
+    # only to be differenced against its own operator on the same bootstrap resamples.
+    runs_ref = {}
+    if args.compare_to is not None:
+        for mode in [m for m in LADDER if m in runs]:
+            run_dir = RESULTS / args.compare_to.format(mode=mode)
+            if not run_dir.is_dir():
+                print(f"  (skipping {mode} reference: {run_dir.relative_to(REPO)} not found)")
+            elif not any(run_dir.glob("split_*_results.pkl")):
+                print(f"  (skipping {mode} reference: {run_dir.relative_to(REPO)} has no "
+                      f"split_*_results.pkl)")
+            else:
+                runs_ref[mode] = load_run(run_dir)
 
     X_all, y_all = load_tcga_arms()
-    shared = sorted(set.intersection(*(set(r.index) for r in runs.values())) & set(X_all.index))
+    shared = sorted(set.intersection(*(set(r.index) for r in (*runs.values(), *runs_ref.values())))
+                    & set(X_all.index))
     y = y_all.loc[shared]
-    print(f"{len(shared)} cases shared by all {len(runs)} runs\n")
+    print(f"{len(shared)} cases shared by all {len(runs) + len(runs_ref)} runs\n")
 
     # CLAM stores its own class order; recover it from the WSI-only run and reuse it, since every
     # ladder arm was trained through the same label_dict.
@@ -81,6 +108,8 @@ def main() -> int:
 
     probs = {name: run.loc[shared, [f"p{i}" for i in range(4)]].values[:, perm]
              for name, run in runs.items()}
+    probs_ref = {name: run.loc[shared, [f"p{i}" for i in range(4)]].values[:, perm]
+                 for name, run in runs_ref.items()}
 
     # The bar: WSI-only averaged with a CNV logistic regression, refit per fold so it is honestly
     # out-of-fold on the same partition the CLAM runs used.
@@ -97,6 +126,8 @@ def main() -> int:
     idx = bootstrap_indices(y.values, args.n_boot, seed=13)
     scored = {name: np.array([[macro_auroc(y.values[j], P[j]), balanced_acc(y.values[j], P[j])]
                               for j in idx]) for name, P in probs.items()}
+    scored_ref = {name: np.array([[macro_auroc(y.values[j], P[j]), balanced_acc(y.values[j], P[j])]
+                                  for j in idx]) for name, P in probs_ref.items()}
 
     order_out = ["WSI only", "CNV only", "probability mean", *[m for m in LADDER if m in probs]]
     print(pd.DataFrame([
@@ -116,6 +147,16 @@ def main() -> int:
                                                scored["probability mean"][:, col])
             cells.append(f"{lab} {mean_d:+.4f} [{lo:+.4f},{hi:+.4f}] {verdict:3s}")
         print(f"  {name:18s} " + " | ".join(cells))
+
+    if probs_ref:
+        print(f"\nvs the same operator in {args.compare_to}, paired bootstrap:")
+        for name in [m for m in LADDER if m in probs_ref]:
+            cells = []
+            for col, lab in enumerate(("dAUROC", "dBalAcc")):
+                mean_d, lo, hi, verdict = delta_ci(scored[name][:, col], scored_ref[name][:, col])
+                cells.append(f"{lab} {mean_d:+.4f} [{lo:+.4f},{hi:+.4f}] {verdict:3s}")
+            print(f"  {name:18s} ref macroAUROC {macro_auroc(y.values, probs_ref[name]):.4f} "
+                  f"balAcc {balanced_acc(y.values, probs_ref[name]):.4f} | " + " | ".join(cells))
 
     # Is the mean's advantage fusion or just model count? It averages two models; each operator is
     # one. So ensemble the operators and re-ask. A 5-model fusion ensemble that still loses to a

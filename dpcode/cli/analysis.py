@@ -223,7 +223,8 @@ def _needs(cfg: DictConfig, action: str) -> list[Need]:
         # refactor. Its `RESULTS` is its own literal — `Path(__file__).parent.parent
         # / ".scratch/results"` — rather than `paths.results_root`, so the check has
         # to mirror that literal or it would vouch for a directory the script never
-        # opens. The five ladder arms are NOT required: the script prints
+        # opens. The ladder arms named by `analysis.run_pattern` — and the reference
+        # arms named by `analysis.compare_to` — are NOT required: the script prints
         # "(skipping <mode>: ... not found)" for each missing one and carries on.
         ladder_results = Path(str(cfg.paths.repo_root)) / ".scratch" / "results"
         return [
@@ -326,15 +327,22 @@ def run_make_cnv_tabular(cfg: DictConfig, run_dir: Path | None = None) -> int:
 def run_compare_fusion_ladder(cfg: DictConfig, run_dir: Path | None = None) -> int:
     """Dispatch `tools/compare_fusion_ladder.py` as a subprocess.
 
-    That script belongs to the thesis author and is not edited by this refactor. It already
-    anchors every path on `Path(__file__)`, so it runs correctly from any working directory; it
-    is launched rather than imported so its bare `from pam50_arms import …` keeps resolving the
-    way it does today.
+    That script belongs to the thesis author. It already anchors every path on `Path(__file__)`,
+    so it runs correctly from any working directory; it is launched rather than imported so its
+    bare `from pam50_arms import …` keeps resolving the way it does today.
+
+    `analysis.run_pattern` selects which run directories under `.scratch/results` hold the ladder
+    (`{mode}` substituted per operator); `analysis.compare_to`, when it is not null, names a second
+    pattern each operator is additionally paired-bootstrapped against. `--compare-to` is passed
+    only when set, so the default argv — and therefore the default output — is unchanged.
     """
     script = Path(str(cfg.paths.repo_root)) / "tools" / "compare_fusion_ladder.py"
     if not script.exists():
         raise FileNotFoundError(f"{script} does not exist")
-    argv = [sys.executable, str(script), "--n-boot", str(cfg.analysis.n_boot)]
+    argv = [sys.executable, str(script), "--n-boot", str(cfg.analysis.n_boot),
+            "--run-pattern", str(cfg.analysis.run_pattern)]
+    if cfg.analysis.compare_to is not None:
+        argv += ["--compare-to", str(cfg.analysis.compare_to)]
     print(f"$ {' '.join(argv)}\n", flush=True)
     # Streamed line by line through this process's `print` rather than inherited on fd 1: the run
     # directory's `output.txt` is written by a Python-level tee, and a child writing straight to

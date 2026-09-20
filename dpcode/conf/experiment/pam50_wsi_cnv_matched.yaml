@@ -1,0 +1,130 @@
+# @package _global_
+# The MATCHED-RECIPE fusion ladder: the same H&E + arm-level CNV operators as
+# `experiment=pam50_wsi_cnv`, retrained under the WSI baseline's own optimiser
+# recipe instead of the wrapper's rounded one.
+#
+#   what     : task T2 of docs/implementation-research/multimodality-trained-fusion-plan.md
+#   run with : dp-train -m experiment=pam50_wsi_cnv_matched fusion=gated,coattn
+#              (the best two operators first; the remaining three —
+#              concat, cross_attention, film_attention — only if T2's gate passes)
+#   writes   : ${paths.results_root}/pam50_wsi_cnv_matched_<operator>_s1/
+#   scored by: dp-analysis compare_fusion_ladder with `analysis.run_pattern` /
+#              `analysis.compare_to`, so the new run directories are picked up
+#              without editing hard-coded names. THOSE TWO FLAGS DO NOT EXIST
+#              YET — another session adds them; until then the comparison has no
+#              entry point.
+#
+# NOTHING IS ON DISK FOR THIS EXPERIMENT YET. `dp-train` refuses to write into a
+# run directory that already holds `summary.csv` or an `s_*_checkpoint.pt`;
+# `run.overwrite=true` defeats that guard and destroys results that are not
+# recoverable from git (`.scratch/` is gitignored). Never pass it.
+#
+# EXACTLY FOUR DIFFERENCES FROM experiment=pam50_wsi_cnv:
+#   * `lr: 0.0001007597588073064` and `reg: 0.0000024456514744717547` — the
+#     baseline's full-precision sweep values, not the ladder's rounded
+#     1e-4 / 2.5e-6;
+#   * `bag_weight: 0.5533776374353542` (the ladder leaves CLAM's 0.7);
+#   * `inst_loss: svm` (the ladder leaves CLAM's null);
+#   * `no_inst_cluster: false` — written out explicitly, where the ladder sets it
+#     true.
+#   `B: 4`, the tabular block, the warm start, the splits, the seed and the fold
+#   count are identical to the ladder, so the arms stay comparable to
+#   `pam50_wsi_cnv_<operator>_s1` and to `pam50_final_s1`.
+#
+# THE LOAD-BEARING CAVEAT — three of those four are INERT, verified in code:
+#   * `project/CLAM/utils/core_utils.py:434` reads
+#     `... and not _is_multimodal(args) and not args.no_inst_cluster`, so any run
+#     with a `fusion_mode` routes to `train_loop`, never `train_loop_clam`. The
+#     instance-clustering loop — the only consumer of `bag_weight` — is
+#     unreachable here, whatever `no_inst_cluster` says.
+#   * `core_utils.train()` builds `CLAMRNAFusion` in the `_is_multimodal` branch
+#     (line 348) and never touches `args.inst_loss`; the `instance_loss_fn`
+#     construction sits in the `elif` unimodal branch below it (line 388).
+#   * `CLAMRNAFusion.forward` (`models/model_multimodal.py:319`) accepts `label`
+#     and `instance_eval` and ignores both.
+#   So `bag_weight`, `inst_loss` and `no_inst_cluster` are recorded in
+#   `experiment_pam50_wsi_cnv_matched_<operator>.txt` and change no computation.
+#   The ONLY live difference from the original ladder is `lr`/`reg` at full
+#   precision. Making instance clustering actually live on the multimodal path is
+#   a model / training-loop change belonging to task T5's file set, and is
+#   deliberately NOT done here.
+#   Consequence to keep in mind when reading the result: because the live delta is
+#   two small optimiser constants, this run ALSO measures ladder run-to-run
+#   variance, which CLAUDE.md records as unmeasured (seeds and folds are fixed,
+#   but bitwise reproducibility is not achieved). A small Δ against
+#   `pam50_wsi_cnv_<operator>_s1` cannot be attributed to the recipe alone.
+#
+# The `fusion` group is MANDATORY, as in the ladder: a missing operator would
+# compose a WSI-only run named `pam50_wsi_cnv_matched_none_s1` that looks like an
+# arm and is not one.
+#
+# WARM START, NOT FREEZE — unchanged from the ladder. `pretrained_wsi_ckpt`
+# initialises the WSI branch from `pam50_final_s1` and `freeze_wsi_branch` stays
+# false, so the branch is fine-tuned. CLAM expands `{fold}` per fold; neither the
+# shell nor OmegaConf does. On the command line a value containing `{` must be
+# quoted:
+#   dp-train … 'clam.pretrained_wsi_ckpt="/abs/s_{fold}_checkpoint.pt"'
+#
+# W&B is OFF, as in the ladder (the baseline logs, the ladder does not — keeping
+# it off is what makes the two ladders comparable to each other). Turning it on
+# means passing all three flags:
+#   dp-train experiment=pam50_wsi_cnv_matched fusion=gated clam.wandb=true \
+#       clam.wandb_project=clam-brca-subtyping-cv \
+#       'clam.wandb_tags=[wsi,cnv,matched,gated]'
+#
+# `--inst_loss svm` would import `topk.svm` if it were reached; `dp-config
+# validate` checks that pin is importable regardless.
+#
+# Prerequisite: `dp-analysis make_cnv_tabular` has written the files under
+# ${paths.cnv_tabular_dir} (`chromosome_groups.csv` too, for `fusion=coattn`).
+# `dp-train` checks they exist before it creates anything.
+
+defaults:
+  - override /fusion: ???
+
+run:
+  name: pam50_wsi_cnv_matched_${fusion.name}
+
+clam:
+  # data and task
+  task: tcga_brca_subtyping
+  subtyping: true
+  embed_dim: 1536
+
+  # identity — one run directory per operator
+  exp_code: pam50_wsi_cnv_matched_${fusion.name}
+
+  # optimisation — full-precision baseline values (the live difference)
+  max_epochs: 50
+  k: 10
+  seed: 1
+  early_stopping: true
+  patience: 5
+  weighted_sample: true
+  log_data: true
+  drop_out: 0.5
+  opt: adam
+  lr: 0.0001007597588073064
+  reg: 0.0000024456514744717547
+
+  # model — bag_weight / inst_loss / no_inst_cluster matched to the baseline and
+  # inert on this path (see the caveat above)
+  model_type: clam_mb
+  model_size: big
+  B: 4
+  bag_loss: ce
+  bag_weight: 0.5533776374353542
+  inst_loss: svm
+  no_inst_cluster: false
+
+  # second modality: 39 chromosome arms, sized for a 39-dim input (the RNA arm
+  # uses 256 / 10000 for 19,944 genes)
+  tabular_csv: ${paths.cnv_tabular_dir}/TCGA_BRCA_CNV_arm_4class_clam.csv
+  tabular_case_id_col: case_id
+  tabular_hidden_dim: 64
+  tabular_num_layers: 2
+  tabular_top_n_features: 0
+  fusion_hidden_dim: 32
+
+  # H&E stays primary: warm start from the WSI-only baseline, branch not frozen
+  pretrained_wsi_ckpt: ${paths.results_root}/pam50_final_s1/s_{fold}_checkpoint.pt

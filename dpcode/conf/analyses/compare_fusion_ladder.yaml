@@ -16,8 +16,9 @@
 # so it runs correctly from any working directory, and launching rather than importing it keeps
 # its `from pam50_arms import ...` resolving exactly as it does when run by hand.
 #
-# It reads .scratch/results/pam50_wsi_cnv_<mode>_s1 for the five completed ladder arms. Those runs
-# cost about 2h38m of GPU time and live in a gitignored tree; nothing here writes into them.
+# It reads .scratch/results/<run_pattern with {mode} substituted> for the five ladder arms; the
+# default is the five completed runs, which cost about 2h38m of GPU time and live in a gitignored
+# tree. Nothing here writes into them.
 #
 # The published verdict: every trained operator loses to the untrained equal-weight mean, five
 # operators ensembled still lose to two independently trained ones, and the mechanism is error
@@ -25,5 +26,21 @@
 
 action: compare_fusion_ladder
 
-# The script's only flag. Its bootstrap seed is fixed inside the script.
+# The script's bootstrap size. Its seed (13) is fixed inside the script.
 n_boot: 2000
+
+# Which run directories under .scratch/results hold the ladder, one per operator; `{mode}` is
+# substituted with concat/gated/cross_attention/film_attention/coattn. Missing dirs are skipped by
+# the script, not an error.
+#
+# A value containing `{` MUST be quoted on the command line — Hydra's grammar rejects a bare `{`,
+# the same trap CLAUDE.md documents for `{fold}`:
+#   dp-analysis compare_fusion_ladder 'analysis.run_pattern="pam50_wsi_cnv_matched_{mode}_s1"'
+run_pattern: pam50_wsi_cnv_{mode}_s1
+
+# Optional second pattern. When set, every operator loaded from `run_pattern` is additionally
+# paired-bootstrapped (same resamples) against its counterpart here, which answers "Δ vs the
+# original rounded-recipe run of the same operator" beside the usual Δ vs the mean. Quote it the
+# same way:
+#   dp-analysis compare_fusion_ladder 'analysis.compare_to="pam50_wsi_cnv_{mode}_s1"'
+compare_to: null
